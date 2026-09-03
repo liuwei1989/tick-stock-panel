@@ -150,7 +150,11 @@ function ParamField({ def, value, onChange }: {
           onChange={e => onChange(e.target.value)}
           className="w-24 px-1.5 py-0.5 rounded bg-base border border-border text-[11px] font-mono text-foreground focus:outline-none focus:border-accent/50"
         >
-          {def.options.map(o => <option key={o} value={o}>{o}</option>)}
+          {def.options.map(o => {
+            const optionValue = typeof o === 'object' ? o.value : o
+            const optionLabel = typeof o === 'object' ? o.label : o
+            return <option key={optionValue} value={optionValue}>{optionLabel}</option>
+          })}
         </select>
       </div>
     )

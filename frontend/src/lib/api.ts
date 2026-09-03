@@ -677,7 +677,7 @@ export interface StrategyParamDef {
   min?: number
   max?: number
   step?: number
-  options?: string[]
+  options?: Array<string | { label: string; value: string }>
 }
 
 export interface CompositeChildInfo {

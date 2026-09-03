@@ -722,7 +722,11 @@ function StrategyParamInput({ param, value, onChange }: {
       <label className="block">
         <span className="mb-1 block text-[11px] text-secondary">{param.label}</span>
         <select value={value ?? param.default} onChange={e => onChange(e.target.value)} className={INPUT_CLS}>
-          {(param.options ?? []).map(opt => <option key={opt} value={opt}>{opt}</option>)}
+          {(param.options ?? []).map(opt => {
+            const optionValue = typeof opt === 'object' ? opt.value : opt
+            const optionLabel = typeof opt === 'object' ? opt.label : opt
+            return <option key={optionValue} value={optionValue}>{optionLabel}</option>
+          })}
         </select>
       </label>
     )

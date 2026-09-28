@@ -2199,6 +2199,95 @@ export interface SectorRotationUniverseItem {
   excluded?: boolean
 }
 
+// ===== Workflow (策略发现→盘前计划→复盘 闭环) =====
+export interface WorkflowPlanEntry {
+  symbol: string
+  strategy_id: string
+  strategy_name: string
+  score: number | null
+  source: string
+  signal: string
+  reference_price: number | null
+  entry_low: number | null
+  entry_high: number | null
+  stop_loss: number | null
+  position_pct: number
+}
+export interface WorkflowPlan {
+  plan_id: string
+  trade_date: string
+  regime: Record<string, unknown>
+  source: { strategies: { strategy_id: string; name: string; source: string }[] }
+  entries: WorkflowPlanEntry[]
+  status: 'planned' | 'reviewed'
+  review_id?: string
+  created_at: string
+}
+export interface WorkflowReviewResult {
+  symbol: string
+  strategy_id: string
+  strategy_name: string
+  source: string
+  score: number | null
+  reference_price: number | null
+  entry_low: number | null
+  entry_high: number | null
+  open: number | null
+  high: number | null
+  low: number | null
+  close: number | null
+  hit: boolean | null
+  fill_price: number | null
+  pnl_pct: number | null
+  best_pnl_pct: number | null
+  note: string
+}
+export interface WorkflowReviewSummary {
+  planned: number
+  with_data: number
+  triggered: number
+  untriggered: number
+  wins: number
+  win_rate: number
+  avg_pnl_pct: number
+  avg_best_pnl_pct: number
+  best_symbol?: string | null
+  worst_symbol?: string | null
+}
+export interface WorkflowStrategyFeedback {
+  strategy_id: string
+  planned: number
+  triggered: number
+  win_rate: number
+  avg_pnl_pct: number
+}
+export interface WorkflowReview {
+  review_id: string
+  plan_id: string
+  trade_date: string
+  summary: WorkflowReviewSummary
+  results: WorkflowReviewResult[]
+  strategy_feedback: WorkflowStrategyFeedback[]
+  created_at: string
+}
+export interface WorkflowOverview {
+  latest_plan: {
+    plan_id: string
+    trade_date: string
+    status: string
+    entries: number
+  } | null
+  latest_review: {
+    review_id: string
+    plan_id: string
+    trade_date: string
+    summary: WorkflowReviewSummary
+  } | null
+  applied_evolution: { strategy_id: string }[]
+  recommendations_count: number
+  feedback_count: number
+}
+
 // ===== API surface =====
 export const api = {
   health: () => request<{ status: string; version: string; mode: string }>('/health'),
@@ -2273,6 +2362,26 @@ export const api = {
   preferences: () => request<Preferences>('/api/settings/preferences'),
   dataSources: () => request<DataSourcesResponse>('/api/settings/data-sources'),
   capabilityMatrix: () => request<CapabilityMatrix>('/api/settings/capability-matrix'),
+  workflowOverview: () => request<WorkflowOverview>('/api/workflow/overview'),
+  workflowGeneratePlan: (body: { trade_date?: string; max_entries?: number; max_per_strategy?: number; use_evolution?: boolean }) =>
+    request<WorkflowPlan & { ok: boolean; error?: string }>('/api/workflow/plan/generate', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  workflowPlans: (date?: string) =>
+    request<{ plans: WorkflowPlan[]; total: number }>(`/api/workflow/plans${date ? `?date=${encodeURIComponent(date)}` : ''}`),
+  workflowPlan: (planId: string) =>
+    request<WorkflowPlan>(`/api/workflow/plans/${encodeURIComponent(planId)}`),
+  workflowReviewPlan: (planId: string, body: { trade_date?: string }) =>
+    request<WorkflowReview & { ok: boolean; error?: string; already_reviewed?: boolean }>(`/api/workflow/plan/${encodeURIComponent(planId)}/review`, {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  workflowReviews: (date?: string) =>
+    request<{ reviews: WorkflowReview[]; total: number }>(`/api/workflow/reviews${date ? `?date=${encodeURIComponent(date)}` : ''}`),
+  workflowReview: (reviewId: string) =>
+    request<WorkflowReview>(`/api/workflow/reviews/${encodeURIComponent(reviewId)}`),
+
   dataSource: (name: string) => request<CustomSourceConfig>(`/api/settings/data-sources/${encodeURIComponent(name)}`),
   saveDataSource: (config: CustomSourceConfig) =>
     request<DataSourcesResponse>('/api/settings/data-sources', {

@@ -361,7 +361,12 @@ def run_strategy(req: RunRequest, request: Request):
 
     # 读取用户覆盖配置
     overrides = strategy_config.load_override(data_dir, req.strategy_id)
-    params = req.params or {}
+    # 进化推荐已应用参数 (人工确认后生效; 优先级: 请求 > 用户覆盖 > 进化应用 > 策略默认)
+    from app.backtest.evolution import get_applied_overrides
+
+    _applied = get_applied_overrides(data_dir).get(req.strategy_id) or {}
+    params = dict(_applied.get("params") or {})
+    params.update(req.params or {})
     # 合并用户保存的策略参数
     if overrides.get("params"):
         merged = dict(overrides["params"])

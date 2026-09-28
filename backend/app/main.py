@@ -20,6 +20,7 @@ from app.api import (
     data,
     ext_data,
     events,
+    evolution,
     factors,
     financials,
     indices,
@@ -508,6 +509,7 @@ app.include_router(watchlist.router)
 app.include_router(screener.router)
 app.include_router(backtest.router)
 app.include_router(factors.router)
+app.include_router(evolution.router)
 app.include_router(mining.router)
 app.include_router(intraday.router)
 app.include_router(indices.router)

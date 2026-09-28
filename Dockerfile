@@ -8,6 +8,7 @@ ARG NPM_REGISTRY=https://registry.npmmirror.com
 ARG PYPI_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
 # 备用 PyPI 源:主源同步延迟/故障时自动兜底(阿里云与清华互为补充)
 ARG PYPI_FALLBACK=https://mirrors.aliyun.com/pypi/simple
+ARG APT_MIRROR=mirrors.aliyun.com
 ARG BACKEND_EXTRAS=
 ARG CODEX_CLI_VERSION=0.144.3
 
@@ -67,6 +68,7 @@ FROM python:3.11-slim AS runtime
 ARG USE_CN_MIRROR=1
 ARG PYPI_INDEX=https://pypi.tuna.tsinghua.edu.cn/simple
 ARG PYPI_FALLBACK=https://mirrors.aliyun.com/pypi/simple
+ARG APT_MIRROR=mirrors.aliyun.com
 ARG BACKEND_EXTRAS=
 ARG INCLUDE_STOCKSDK=0
 WORKDIR /app
@@ -80,7 +82,7 @@ WORKDIR /app
 # 单阶段可达 8 分钟以上); USE_CN_MIRROR 与 npm/pypi 的换源开关注一脉相承。
 # tesseract-ocr: 自选截图导入（始终安装）; nodejs: 仅 INCLUDE_STOCKSDK=1 时安装
 RUN if [ "$USE_CN_MIRROR" = "1" ]; then \
-        sed -i 's|deb.debian.org|mirrors.aliyun.com|g' /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list 2>/dev/null || true; \
+        sed -i "s|deb.debian.org|${APT_MIRROR:-mirrors.aliyun.com}|g" /etc/apt/sources.list.d/debian.sources /etc/apt/sources.list 2>/dev/null || true; \
     fi \
     && apt-get update \
     && apt-get install -y --no-install-recommends tesseract-ocr tesseract-ocr-eng \

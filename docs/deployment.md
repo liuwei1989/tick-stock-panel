@@ -1,5 +1,7 @@
 # 部署指南
 
+本项目的远程服务器、域名、Docker Compose 原子更新和 Nginx 配置记录见仓库根目录的 [`DEPLOYMENT.md`](../DEPLOYMENT.md)。本文档保留通用的本地开发、Docker 和访问密码说明。
+
 本项目的几种运行方式，按推荐程度排序。配置项详解见 [configuration.md](./configuration.md)。
 
 > 📌 前置依赖(仅方式 D 需要):Python ≥ 3.11 · Node ≥ 20 · [`uv`](https://docs.astral.sh/uv/) · `pnpm`（`npm i -g pnpm`）

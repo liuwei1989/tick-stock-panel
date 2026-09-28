@@ -514,6 +514,49 @@ export interface OverviewMarket {
   industry_rank: { leading: OverviewDimensionRankItem[]; lagging: OverviewDimensionRankItem[] }
 }
 
+// ===== 今日操作台 =====
+export interface TodayAction {
+  key: string
+  label: string
+  reason: string
+  tone: 'warning' | 'danger' | 'accent' | 'neutral'
+}
+
+export interface TodayActions {
+  trade_date: string
+  as_of: string | null
+  generated_at: string
+  next_action: TodayAction
+  market: {
+    state?: string | null
+    state_label?: string | null
+    phase?: string | null
+    phase_label?: string | null
+    score?: number | null
+    max_consecutive?: number | null
+    mainline: MainlineRow[]
+  }
+  watchlist: {
+    count: number
+    rows: Array<{
+      symbol: string
+      name?: string | null
+      close?: number | null
+      change_pct?: number | null
+      status: string
+      priority: string
+      group_ids: string[]
+    }>
+  }
+  risks: AlertEvent[]
+  readiness: {
+    has_data: boolean
+    has_regime: boolean
+    watchlist_count: number
+    alert_count: number
+  }
+}
+
 // ===== 概念涨幅轮动矩阵 =====
 // dates: 日期字符串列表(最新在最前); columns: {日期: [[概念名, 涨幅小数], ...]} 每列各自降序
 export interface RpsRotationData {
@@ -2845,6 +2888,7 @@ export const api = {
   marketSnapshot: () =>
     request<{ as_of: string | null; rows: MarketSnapshotRow[] }>('/api/screener/market-snapshot'),
   overviewMarket: (asOf?: string) => request<OverviewMarket>(`/api/overview/market${asOf ? `?as_of=${asOf}` : ''}`),
+  todayActions: () => request<TodayActions>('/api/today/actions'),
 
   // 概念涨幅轮动矩阵: 每列(日期)各自把所有概念按当天涨幅从高到低排序
   rpsRotation: (days: number, kind?: 'concept' | 'industry', level?: number) =>

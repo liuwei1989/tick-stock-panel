@@ -1,10 +1,10 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
-import { Link } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'framer-motion'
-import { ArrowUpRight, Check, Database, Gauge, GripVertical, Info, Loader2, Play, RefreshCw, RotateCcw, Sparkles, Timer } from 'lucide-react'
+import { ArrowRight, ArrowUpRight, Check, ClipboardCheck, Database, Gauge, GripVertical, Info, Loader2, Play, RefreshCw, RotateCcw, Sparkles, Timer } from 'lucide-react'
 import { DatePicker } from '@/components/DatePicker'
-import { api, type AlertEvent } from '@/lib/api'
+import { api, type AlertEvent, type TodayActions } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { DimensionMembersDialog, type DimensionMembersTarget } from '@/components/DimensionMembersDialog'
 import { useDataStatus, useCapabilities, useSettings, usePreferences } from '@/lib/useSharedQueries'
@@ -22,6 +22,69 @@ import { cloneItems, GRID_COLS, type WidgetType } from '@/components/dashboard/l
 
 /** 打开个股预览的来源榜 (用于行高亮与切股导航列表) */
 type PreviewSource = 'gain' | 'loss' | 'amount' | 'active' | 'concept' | 'industry' | 'alert'
+
+function TodayActionCenter({ data }: { data: TodayActions | undefined }) {
+  const navigate = useNavigate()
+  const action = data?.next_action
+  const actionPath = action?.key === 'review_mainline'
+    ? '/regime'
+    : action?.key === 'review_watchlist'
+      ? '/watchlist'
+      : action?.key === 'review_risk'
+        ? '/abnormal'
+        : action?.key === 'sync_data'
+          ? '/data'
+          : '/regime'
+  const tone = action?.tone === 'danger'
+    ? 'border-danger/40 bg-danger/5'
+    : action?.tone === 'warning'
+      ? 'border-warning/40 bg-warning/5'
+      : action?.tone === 'accent'
+        ? 'border-accent/40 bg-accent/5'
+        : 'border-border bg-surface/80'
+  const phase = data?.market.phase_label || data?.market.state_label || '等待市场环境'
+  const topMainline = data?.market.mainline?.slice(0, 3) ?? []
+
+  if (!data) return null
+  return (
+    <section className={`mb-1.5 rounded-card border px-3 py-2 shadow-[0_1px_2px_hsl(var(--border)/0.3)] ${tone}`}>
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex min-w-0 items-start gap-2">
+          <ClipboardCheck className="mt-0.5 h-4 w-4 shrink-0 text-accent" />
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <h2 className="text-xs font-semibold text-foreground">今日操作台</h2>
+              <span className="rounded-full border border-border/70 bg-elevated/60 px-1.5 py-0.5 text-[10px] text-secondary">{phase}</span>
+              {data.market.score != null && <span className="font-mono text-[10px] text-muted">环境 {data.market.score.toFixed(0)}</span>}
+            </div>
+            <p className="mt-0.5 text-[11px] text-secondary">{action?.label}：{action?.reason}</p>
+          </div>
+        </div>
+        <button
+          onClick={() => navigate(actionPath)}
+          className="inline-flex shrink-0 items-center gap-1 rounded-btn border border-border bg-elevated px-2 py-1 text-[11px] font-medium text-secondary transition-colors hover:border-accent/50 hover:text-foreground"
+        >
+          执行复核 <ArrowRight className="h-3 w-3" />
+        </button>
+      </div>
+      <div className="mt-1.5 grid grid-cols-1 gap-1.5 sm:grid-cols-3">
+        <div className="text-[10px] text-muted">数据日期 <span className="font-mono text-secondary">{data.as_of || '暂无'}</span></div>
+        <div className="text-[10px] text-muted">自选 <span className="font-mono text-secondary">{data.watchlist.count} 只</span></div>
+        <div className="text-[10px] text-muted">近一日告警 <span className={`font-mono ${data.risks.length ? 'text-warning' : 'text-secondary'}`}>{data.risks.length} 条</span></div>
+      </div>
+      {topMainline.length > 0 && (
+        <div className="mt-1.5 flex min-w-0 items-center gap-1.5 overflow-x-auto text-[10px] text-muted">
+          <span className="shrink-0">主线</span>
+          {topMainline.map((item, index) => (
+            <span key={`${item.member}-${index}`} className="shrink-0 rounded border border-border/70 bg-elevated/50 px-1.5 py-0.5 text-secondary">
+              {index + 1}. {item.member}
+            </span>
+          ))}
+        </div>
+      )}
+    </section>
+  )
+}
 
 export function Dashboard() {
   const qc = useQueryClient()
@@ -64,6 +127,13 @@ export function Dashboard() {
     queryKey: QK.overviewMarket(selectedDate),
     queryFn: () => api.overviewMarket(selectedDate),
     staleTime: 5_000,
+    placeholderData: (prev) => prev,
+  })
+  const today = useQuery({
+    queryKey: QK.todayActions,
+    queryFn: api.todayActions,
+    staleTime: 10_000,
+    refetchInterval: 30_000,
     placeholderData: (prev) => prev,
   })
   const data = overview.data
@@ -132,6 +202,7 @@ export function Dashboard() {
     if (fetchSucceeded) {
       qc.invalidateQueries({ queryKey: QK.dataStatus })
       qc.invalidateQueries({ queryKey: QK.overviewMarket(undefined) })
+      qc.invalidateQueries({ queryKey: QK.todayActions })
     }
   }, [fetchSucceeded, qc])
 
@@ -153,7 +224,10 @@ export function Dashboard() {
   const handleRefresh = () => {
     setManualFetching(true)
     api.refreshCache()
-      .then(() => qc.invalidateQueries({ queryKey: ['overview-market'] }))
+      .then(() => {
+        qc.invalidateQueries({ queryKey: ['overview-market'] })
+        qc.invalidateQueries({ queryKey: QK.todayActions })
+      })
       .finally(() => {
         overview.refetch().finally(() => setManualFetching(false))
       })
@@ -301,6 +375,8 @@ export function Dashboard() {
           )}
         </div>
       </div>
+
+      <TodayActionCenter data={today.data} />
 
       {/* 自选实时模式提示: 大盘看板为盘后数据, 仅自选股实时。避免用户误读为全市场实时。 */}
       {quoteMode === 'watchlist' && (

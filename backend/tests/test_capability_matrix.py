@@ -59,7 +59,7 @@ def test_matrix_without_third_party_sources(monkeypatch):
     assert len(matrix["capabilities"]) == 7
     for cap in matrix["capabilities"]:
         names = [c["name"] for c in cap["candidates"]]
-        assert names == (["tickflow", "zzshare"] if cap["id"] in ("daily", "adj_factor") else ["tickflow"])
+        assert names == (["tickflow", "zzshare"] if cap["id"] in ("daily", "adj_factor", "minute") else ["tickflow"])
         assert cap["candidates"][0]["kind"] == "builtin"
         assert cap["tf_available"] is True
         assert cap["usable"] is True
@@ -96,9 +96,11 @@ def test_tickflow_candidates_filtered_by_tier(monkeypatch):
     caps = _by_id(build_capability_matrix(dict(DEFAULT_CURRENT), tickflow_tier="free"))
     assert caps["daily"]["tf_available"] is True
     assert [c["name"] for c in caps["daily"]["candidates"]] == ["tickflow", "zzshare"]
-    for cap_id in ("realtime", "minute", "depth5", "financial"):
+    for cap_id in ("realtime", "depth5", "financial"):
         assert caps[cap_id]["tf_available"] is False
         assert [c["name"] for c in caps[cap_id]["candidates"]] == []
+    assert caps["minute"]["tf_available"] is False
+    assert [c["name"] for c in caps["minute"]["candidates"]] == ["zzshare"]
     assert caps["adj_factor"]["tf_available"] is False
     assert [c["name"] for c in caps["adj_factor"]["candidates"]] == ["zzshare"]
     # starter 解锁实时与除权, 分钟/五档/财务仍锁
@@ -149,7 +151,7 @@ def test_usable_follows_effective_provider(monkeypatch):
     assert caps["realtime"]["usable"] is True
     # 路由到未就绪插件: 有可用候选 (fuyao) 也不算 usable
     minute = caps["minute"]
-    assert [c["name"] for c in minute["candidates"]] == ["fuyao"]
+    assert [c["name"] for c in minute["candidates"]] == ["zzshare", "fuyao"]
     assert minute["usable"] is False
     # 除权默认路由 tickflow: 自身档位门槛 (starter+) 生效, free 档不可用
     # (独立路由, 不再随日K联动)

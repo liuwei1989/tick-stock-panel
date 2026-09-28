@@ -219,7 +219,7 @@ def get_minute_refresh_interval() -> int:
 
 # ===== 数据源选择 (默认 TickFlow；第一阶段仅日K切换入口) =====
 
-_ALLOWED_DATA_PROVIDERS = {"tickflow"}
+_ALLOWED_DATA_PROVIDERS = {"tickflow", "zzshare"}
 DATA_SOURCE_JOB_TIMEOUT_MIN_S = 60
 
 

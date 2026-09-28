@@ -56,10 +56,12 @@ def _fetch_instruments_via_provider() -> list[dict] | None:
     if provider_name == "tickflow":
         return None
     from app.data_providers import custom as custom_sources
+    from app.data_providers.registry import _PROVIDERS as _builtin_providers
 
-    if not custom_sources.is_custom_provider(provider_name):
+    if provider_name not in _builtin_providers and not custom_sources.is_custom_provider(provider_name):
         return None
-    provider = custom_sources.get_provider(provider_name)
+    provider = (_builtin_providers[provider_name]() if provider_name in _builtin_providers
+                else custom_sources.get_provider(provider_name))
     if not hasattr(provider, "get_instruments"):
         return None
     try:

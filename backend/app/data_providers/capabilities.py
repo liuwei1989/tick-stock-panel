@@ -112,6 +112,15 @@ def _tier_base(tier: str) -> str:
 def _declared_sources() -> list[dict]:
     """插件 + 自定义源 → 统一能力声明视图。未注册 (hidden/加载失败) 的源不会出现。"""
     rows: list[dict] = []
+    # 内置扩展源 (registry 注册的一等公民, 与 tickflow 并列)
+    rows.append({
+        "name": "zzshare",
+        "display": "Zzshare",
+        "datasets": {"daily", "adj_factor", "instruments"},
+        "available": True,
+        "status": "ok",
+        "kind": "builtin",
+    })
     for plugin in custom_sources.list_plugins():
         rows.append({
             "name": plugin["name"],

@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 from app.data_providers.tickflow_provider import TickFlowProvider
+from app.data_providers.zzshare_provider import ZzshareProvider
 
 _PROVIDERS = {
     "tickflow": TickFlowProvider,
+    "zzshare": ZzshareProvider,
 }
 
 

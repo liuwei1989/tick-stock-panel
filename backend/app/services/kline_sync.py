@@ -270,8 +270,10 @@ def sync_and_persist_daily_batch(
     provider_name = preferences.get_daily_data_provider()
     if provider_name != "tickflow":
         from app.data_providers import custom as custom_sources
-        if custom_sources.provider_has_dataset(provider_name, "daily"):
-            provider = custom_sources.get_provider(provider_name)
+        from app.data_providers.registry import _PROVIDERS as _builtin_providers
+        if provider_name in _builtin_providers or custom_sources.provider_has_dataset(provider_name, "daily"):
+            provider = (_builtin_providers[provider_name]() if provider_name in _builtin_providers
+                        else custom_sources.get_provider(provider_name))
             end_time = end_date or datetime.now()
             days = count or 365
             start_time = start_date or (end_time - timedelta(days=days))
@@ -509,8 +511,10 @@ def sync_adj_factor(symbols: list[str], repo: KlineRepository,
     provider_name = preferences.get_adj_factor_provider()
     if provider_name != "tickflow":
         from app.data_providers import custom as custom_sources
-        if custom_sources.provider_has_dataset(provider_name, "adj_factor"):
-            provider = custom_sources.get_provider(provider_name)
+        from app.data_providers.registry import _PROVIDERS as _builtin_providers
+        if provider_name in _builtin_providers or custom_sources.provider_has_dataset(provider_name, "adj_factor"):
+            provider = (_builtin_providers[provider_name]() if provider_name in _builtin_providers
+                        else custom_sources.get_provider(provider_name))
             new_data = provider.get_adj_factors(
                 symbols,
                 start_time=start_time,

@@ -59,7 +59,7 @@ def test_matrix_without_third_party_sources(monkeypatch):
     assert len(matrix["capabilities"]) == 7
     for cap in matrix["capabilities"]:
         names = [c["name"] for c in cap["candidates"]]
-        assert names == ["tickflow"]
+        assert names == (["tickflow", "zzshare"] if cap["id"] in ("daily", "adj_factor") else ["tickflow"])
         assert cap["candidates"][0]["kind"] == "builtin"
         assert cap["tf_available"] is True
         assert cap["usable"] is True
@@ -81,13 +81,13 @@ def test_candidates_only_available_unready_goes_pending(monkeypatch):
     )
     caps = _by_id(build_capability_matrix(dict(DEFAULT_CURRENT), tickflow_tier="expert"))
     assert [c["name"] for c in caps["realtime"]["candidates"]] == ["tickflow", "fuyao", "myhttp"]
-    assert [c["name"] for c in caps["daily"]["candidates"]] == ["tickflow"]
+    assert [c["name"] for c in caps["daily"]["candidates"]] == ["tickflow", "zzshare"]
     assert [c["name"] for c in caps["daily"]["pending"]] == ["sdk"]
     assert caps["daily"]["pending"][0]["available"] is False
     assert caps["daily"]["pending"][0]["note"] == "依赖未安装"
     assert [c["name"] for c in caps["financial"]["candidates"]] == ["tickflow", "myhttp"]
     assert caps["financial"]["candidates"][1]["kind"] == "custom"
-    assert [c["name"] for c in caps["adj_factor"]["candidates"]] == ["tickflow"]
+    assert [c["name"] for c in caps["adj_factor"]["candidates"]] == ["tickflow", "zzshare"]
 
 
 def test_tickflow_candidates_filtered_by_tier(monkeypatch):
@@ -95,10 +95,12 @@ def test_tickflow_candidates_filtered_by_tier(monkeypatch):
     _fake_sources(monkeypatch, [])
     caps = _by_id(build_capability_matrix(dict(DEFAULT_CURRENT), tickflow_tier="free"))
     assert caps["daily"]["tf_available"] is True
-    assert [c["name"] for c in caps["daily"]["candidates"]] == ["tickflow"]
-    for cap_id in ("realtime", "minute", "depth5", "adj_factor", "financial"):
+    assert [c["name"] for c in caps["daily"]["candidates"]] == ["tickflow", "zzshare"]
+    for cap_id in ("realtime", "minute", "depth5", "financial"):
         assert caps[cap_id]["tf_available"] is False
         assert [c["name"] for c in caps[cap_id]["candidates"]] == []
+    assert caps["adj_factor"]["tf_available"] is False
+    assert [c["name"] for c in caps["adj_factor"]["candidates"]] == ["zzshare"]
     # starter 解锁实时与除权, 分钟/五档/财务仍锁
     caps = _by_id(build_capability_matrix(dict(DEFAULT_CURRENT), tickflow_tier="starter"))
     assert caps["realtime"]["tf_available"] is True
@@ -160,7 +162,7 @@ def test_usable_follows_effective_provider(monkeypatch):
             dict(DEFAULT_CURRENT, adj_factor_provider="sdk"), tickflow_tier="expert",
         ),
     )
-    assert [c["name"] for c in caps["adj_factor"]["candidates"]] == ["tickflow"]
+    assert [c["name"] for c in caps["adj_factor"]["candidates"]] == ["tickflow", "zzshare"]
     assert caps["adj_factor"]["effective"] == "sdk"
     assert caps["adj_factor"]["usable"] is False
     assert caps["daily"]["usable"] is True
@@ -172,7 +174,7 @@ def test_unknown_or_empty_tier_fails_closed(monkeypatch):
     for tier in ("", "unknown", None):
         matrix = build_capability_matrix(dict(DEFAULT_CURRENT), tickflow_tier=tier)
         caps = _by_id(matrix)
-        assert [c["name"] for c in caps["daily"]["candidates"]] == ["tickflow"]
+        assert [c["name"] for c in caps["daily"]["candidates"]] == ["tickflow", "zzshare"]
         assert caps["realtime"]["tf_available"] is False
         assert caps["realtime"]["candidates"] == []
         assert caps["minute"]["tf_available"] is False

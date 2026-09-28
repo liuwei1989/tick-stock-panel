@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from types import SimpleNamespace
 
 import polars as pl
 import pytest
@@ -119,6 +120,59 @@ def test_trade_days_range_filter(monkeypatch):
     p = ZzshareProvider()
     days = p._trade_days_in_range(datetime(2026, 9, 22), datetime(2026, 9, 24))
     assert days == ["20260922", "20260923", "20260924"]
+
+
+# ── minute ────────────────────────────────────────────────
+
+def test_get_minute_normalized(monkeypatch):
+    import pandas as pd
+
+    raw = pd.DataFrame([
+        {"ts_code": "000001.SZ", "trade_time": "202609281030",
+         "open": 11.2, "high": 11.4, "low": 11.1, "close": 11.3, "vol": 12345, "amount": 1.4e6},
+        {"ts_code": "000001.SZ", "trade_time": "202609281031",
+         "open": 11.3, "high": 11.5, "low": 11.2, "close": 11.4, "vol": 6789, "amount": 7.7e5},
+        {"ts_code": "600000.SH", "trade_time": "202609281030",
+         "open": 7.1, "high": 7.2, "low": 7.0, "close": 7.15, "vol": 9999, "amount": 7.1e5},
+    ])
+    def fake_retry(action, label, attempts=3):
+        return action()
+    monkeypatch.setattr("app.services.zzshare_sync._with_retry", fake_retry)
+    monkeypatch.setattr(
+        "app.services.zzshare_sync._client",
+        lambda: SimpleNamespace(
+            stk_mins=lambda ts_code, **k: raw[raw["ts_code"].str.startswith(str(ts_code).split(".")[0])],
+        ),
+    )
+    out = ZzshareProvider().get_minute(
+        ["000001", "600000"],
+        start_time=datetime(2026, 9, 28, 9, 30), end_time=datetime(2026, 9, 28, 15, 0),
+    )
+    assert out.shape == (3, 8)
+    assert list(out.columns) == ["symbol", "datetime", "open", "high", "low", "close", "volume", "amount"]
+    assert set(out["symbol"].unique().to_list()) == {"000001", "600000"}
+    # trade_time(YYYYMMDDHHMM) → 北京墙钟 naive
+    assert out["datetime"].dtype == pl.Datetime("us")
+    assert out["datetime"].min() == datetime(2026, 9, 28, 10, 30)
+
+
+def test_get_minute_empty_when_no_data(monkeypatch):
+    import pandas as pd
+
+    def fake_retry(action, label, attempts=3):
+        return action()
+    monkeypatch.setattr("app.services.zzshare_sync._with_retry", fake_retry)
+    monkeypatch.setattr(
+        "app.services.zzshare_sync._client",
+        lambda: SimpleNamespace(
+            stk_mins=lambda ts_code, **k: pd.DataFrame(columns=[
+                "ts_code", "trade_time", "open", "high", "low", "close", "vol", "amount"]),
+        ),
+    )
+    out = ZzshareProvider().get_minute(
+        ["000001"], start_time=datetime(2026, 9, 28, 9, 30), end_time=datetime(2026, 9, 28, 15, 0), freq="5m",
+    )
+    assert out.is_empty()
 
 
 # ── 注册集成 ──────────────────────────────────────────────

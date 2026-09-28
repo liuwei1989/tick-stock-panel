@@ -116,7 +116,7 @@ def _declared_sources() -> list[dict]:
     rows.append({
         "name": "zzshare",
         "display": "Zzshare",
-        "datasets": {"daily", "adj_factor", "instruments"},
+        "datasets": {"daily", "adj_factor", "instruments", "minute"},
         "available": True,
         "status": "ok",
         "kind": "builtin",

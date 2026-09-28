@@ -44,6 +44,7 @@ class ZzshareProvider(MarketDataProvider):
         instruments=True,
         daily=True,
         adj_factor=True,
+        minute=True,
     )
 
     # ── 交易日区间 ──────────────────────────────────────────
@@ -221,3 +222,87 @@ class ZzshareProvider(MarketDataProvider):
             return pl.DataFrame()
         out = pl.concat(parts).unique(subset=["symbol", "trade_date"], keep="last")
         return out.select(ADJ_FACTOR_COLS).sort(["symbol", "trade_date"])
+
+    # ── minute ──────────────────────────────────────────────
+
+    _FREQ_MAP = {"1m": "1min", "1min": "1min", "5m": "5min", "5min": "5min",
+                 "15m": "15min", "30m": "30min", "60m": "60min"}
+
+    def get_minute(
+        self,
+        symbols: list[str],
+        start_time: datetime | None,
+        end_time: datetime | None,
+        asset_type: AssetType = "stock",
+        freq: str = "1m",
+        on_chunk_done=None,  # noqa: ANN001
+    ) -> pl.DataFrame:
+        if asset_type != "stock" or not symbols:
+            return pl.DataFrame()
+        import pandas as pd
+
+        zfreq = self._FREQ_MAP.get(str(freq).lower(), str(freq).lower())
+        kwargs: dict = {"freq": zfreq}
+        if start_time is not None:
+            kwargs["start_time"] = start_time.strftime("%Y-%m-%d %H:%M")
+        if end_time is not None:
+            kwargs["end_time"] = end_time.strftime("%Y-%m-%d %H:%M")
+
+        symbol_list = [s.split(".")[0].zfill(6) for s in symbols]
+
+        def _fetch_one(sym: str) -> pl.DataFrame:
+            raw = zzshare_sync._with_retry(
+                lambda: zzshare_sync._client().stk_mins(ts_code=sym, **kwargs),
+                f"{sym} 分钟K",
+            )
+            if raw is None or (isinstance(raw, pd.DataFrame) and raw.empty):
+                return pl.DataFrame()
+            if not isinstance(raw, pd.DataFrame):
+                raw = pd.DataFrame(raw)
+            df = pl.from_pandas(raw, include_index=False)
+            if df.is_empty():
+                return df
+            rename_map = {
+                "ts_code": "symbol",
+                "vol": "volume",
+                "amt": "amount",
+            }
+            df = df.rename({k: v for k, v in rename_map.items() if k in df.columns})
+            df = df.with_columns(pl.col("symbol").map_elements(
+                lambda v: str(v).split(".")[0].zfill(6), return_dtype=pl.Utf8,
+            ))
+            if "trade_time" in df.columns:
+                df = df.rename({"trade_time": "datetime"}).with_columns(
+                    pl.col("datetime").str.strptime(pl.Datetime("us"), "%Y%m%d%H%M")
+                    .alias("datetime"),
+                )
+            for col in ("open", "high", "low", "close", "volume", "amount"):
+                if col in df.columns:
+                    df = df.with_columns(pl.col(col).cast(pl.Float64, strict=False))
+            keep = [c for c in ("symbol", "datetime", "open", "high", "low", "close", "volume", "amount")
+                    if c in df.columns]
+            return df.select(keep)
+
+        parts: list[pl.DataFrame] = []
+        done = 0
+        with ThreadPoolExecutor(max_workers=_FETCH_WORKERS) as pool:
+            futures = {pool.submit(_fetch_one, sym): sym for sym in symbol_list}
+            for future in as_completed(futures):
+                done += 1
+                df = future.result()
+                if on_chunk_done:
+                    try:
+                        on_chunk_done(done, len(symbol_list))
+                    except Exception:  # noqa: BLE001
+                        pass
+                if not df.is_empty():
+                    parts.append(df)
+
+        if not parts:
+            return pl.DataFrame()
+        out = pl.concat(parts)
+        # 收口为北京墙钟 naive (zzshare trade_time 即北京时间, 无需时区换算)
+        dt = out["datetime"].dtype
+        if not (isinstance(dt, pl.Datetime) and dt.time_unit == "us"):
+            out = out.with_columns(pl.col("datetime").cast(pl.Datetime("us")))
+        return out.sort(["symbol", "datetime"])

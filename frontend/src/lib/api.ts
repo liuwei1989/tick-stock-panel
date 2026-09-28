@@ -2207,9 +2207,12 @@ export interface WorkflowPlanEntry {
   score: number | null
   source: string
   signal: string
+  entry_signal: string
+  exit_signal: string
   reference_price: number | null
   entry_low: number | null
   entry_high: number | null
+  take_profit: number | null
   stop_loss: number | null
   position_pct: number
 }
@@ -2238,6 +2241,8 @@ export interface WorkflowReviewResult {
   close: number | null
   hit: boolean | null
   fill_price: number | null
+  exit_price: number | null
+  exit_reason: string | null
   pnl_pct: number | null
   best_pnl_pct: number | null
   note: string
@@ -2251,6 +2256,7 @@ export interface WorkflowReviewSummary {
   win_rate: number
   avg_pnl_pct: number
   avg_best_pnl_pct: number
+  exits: Record<string, number>
   best_symbol?: string | null
   worst_symbol?: string | null
 }

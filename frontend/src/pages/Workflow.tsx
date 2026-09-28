@@ -22,6 +22,12 @@ import { fmtPct } from '@/lib/format'
 import { PageHeader } from '@/components/PageHeader'
 import { toast } from '@/components/Toast'
 
+function exitLabel(k: string): string {
+  if (k === 'take_profit') return '止盈'
+  if (k === 'stop_loss') return '止损'
+  return '收盘'
+}
+
 function pctClass(v: number | null | undefined): string {
   if (v == null || Number.isNaN(v) || v === 0) return 'text-muted'
   return v > 0 ? 'text-bull' : 'text-bear'
@@ -228,12 +234,14 @@ export default function Workflow() {
                     <tr className="border-b border-zinc-800 text-left text-xs text-muted">
                       <th className="py-2 pr-2 font-medium">标的</th>
                       <th className="py-2 pr-2 font-medium">策略</th>
+                      <th className="py-2 pr-2 font-medium">加入信号</th>
+                      <th className="py-2 pr-2 font-medium">退出信号</th>
                       <th className="py-2 pr-2 text-right font-medium">分</th>
                       <th className="py-2 pr-2 text-right font-medium">参考价</th>
                       <th className="py-2 pr-2 text-right font-medium">触发区间</th>
-                      <th className="py-2 pr-2 text-right font-medium">止损</th>
+                      <th className="py-2 pr-2 text-right font-medium">止盈/止损</th>
                       <th className="py-2 pr-2 font-medium">来源</th>
-                      <th className="py-2 font-medium">信号</th>
+                      <th className="py-2 font-medium">备注信号</th>
                     </tr>
                   </thead>
                   <tbody>
@@ -241,12 +249,22 @@ export default function Workflow() {
                       <tr key={e.symbol} className="border-b border-zinc-800/60 hover:bg-zinc-900/40">
                         <td className="py-2 pr-2 font-medium">{e.symbol}</td>
                         <td className="py-2 pr-2 text-xs text-muted">{e.strategy_name || e.strategy_id}</td>
+                        <td className="max-w-[140px] truncate py-2 pr-2 text-xs text-emerald-400/90" title={e.entry_signal}>
+                          {e.entry_signal || '—'}
+                        </td>
+                        <td className="max-w-[140px] truncate py-2 pr-2 text-xs text-rose-400/80" title={e.exit_signal}>
+                          {e.exit_signal || '—'}
+                        </td>
                         <td className="py-2 pr-2 text-right">{e.score != null ? e.score.toFixed(1) : '—'}</td>
                         <td className="py-2 pr-2 text-right">{e.reference_price ?? '—'}</td>
                         <td className="py-2 pr-2 text-right text-xs text-muted">
                           {e.entry_low != null && e.entry_high != null ? `${e.entry_low.toFixed(2)} ~ ${e.entry_high.toFixed(2)}` : '—'}
                         </td>
-                        <td className="py-2 pr-2 text-right text-xs text-muted">{e.stop_loss ?? '—'}</td>
+                        <td className="py-2 pr-2 text-right text-xs text-muted">
+                          {e.take_profit != null || e.stop_loss != null
+                            ? `${e.take_profit != null ? '盈' + e.take_profit.toFixed(2) : ''}${e.take_profit != null && e.stop_loss != null ? ' / ' : ''}${e.stop_loss != null ? '损' + e.stop_loss.toFixed(2) : ''}`
+                            : '—'}
+                        </td>
                         <td className="py-2 pr-2 text-xs">
                           <span className={cn(
                             'rounded px-1.5 py-0.5 text-[11px]',
@@ -290,6 +308,7 @@ function ReviewPanel({ planId }: { planId: string }) {
         <MiniStat label="胜率" value={fmtPct(s.win_rate * 100) + '%'} tone={s.win_rate >= 0.5 ? 'good' : 'bad'} />
         <MiniStat label="平均收益" value={fmtPct(s.avg_pnl_pct * 100) + '%'} tone={s.avg_pnl_pct > 0 ? 'good' : 'bad'} />
         <MiniStat label="平均最佳" value={fmtPct(s.avg_best_pnl_pct * 100) + '%'} />
+        <MiniStat label="退出方式" value={Object.entries(s.exits ?? {}).map(([k, v]) => `${exitLabel(k)}×${v}`).join(' ') || '—'} />
         <MiniStat label="最优/最差" value={s.best_symbol ?? '—'} sub={s.worst_symbol ?? '—'} />
       </div>
       {/* 逐标的命中 */}
@@ -302,6 +321,8 @@ function ReviewPanel({ planId }: { planId: string }) {
               <th className="py-1.5 pr-2 text-right font-medium">最高</th>
               <th className="py-1.5 pr-2 text-right font-medium">收盘</th>
               <th className="py-1.5 pr-2 text-right font-medium">成交价</th>
+              <th className="py-1.5 pr-2 text-right font-medium">退出价</th>
+              <th className="py-1.5 pr-2 font-medium">退出方式</th>
               <th className="py-1.5 pr-2 text-right font-medium">收益</th>
               <th className="py-1.5 pr-2 text-right font-medium">最佳</th>
               <th className="py-1.5 font-medium">结果</th>
@@ -315,6 +336,13 @@ function ReviewPanel({ planId }: { planId: string }) {
                 <td className="py-1.5 pr-2 text-right text-xs text-muted">{r.high ?? '—'}</td>
                 <td className="py-1.5 pr-2 text-right text-xs text-muted">{r.close ?? '—'}</td>
                 <td className="py-1.5 pr-2 text-right text-xs text-muted">{r.fill_price ?? '—'}</td>
+                <td className="py-1.5 pr-2 text-right text-xs text-muted">{r.exit_price ?? '—'}</td>
+                <td className="py-1.5 pr-2 text-xs">
+                  {r.exit_reason === 'take_profit' && <span className="text-emerald-400">止盈</span>}
+                  {r.exit_reason === 'stop_loss' && <span className="text-rose-400">止损</span>}
+                  {r.exit_reason === 'close' && <span className="text-muted">收盘</span>}
+                  {!r.exit_reason && <span className="text-muted">—</span>}
+                </td>
                 <td className={cn('py-1.5 pr-2 text-right', pctClass(r.pnl_pct))}>
                   {r.pnl_pct != null ? fmtPct(r.pnl_pct * 100) + '%' : '—'}
                 </td>

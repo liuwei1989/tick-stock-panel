@@ -171,6 +171,8 @@ def generate_plan(
     engine=None,  # noqa: ANN001
     repo=None,  # noqa: ANN001
     use_evolution: bool = True,
+    tp_pct: float = 0.05,
+    stop_pct: float = 0.03,
 ) -> dict:
     """盘前计划: 进化推荐策略全市场扫描 + 自选股补充池 → 固化计划。
 
@@ -217,13 +219,20 @@ def generate_plan(
         except Exception as e:  # noqa: BLE001
             logger.warning("计划扫描策略 %s 失败: %s", sid, e)
             continue
+        entry_hits = {str(h["symbol"]).zfill(6): h.get("signals") or [] for h in getattr(result, "entry_signal_hits", [])}
+        exit_hits = {str(h["symbol"]).zfill(6): h.get("signals") or [] for h in getattr(result, "exit_signal_hits", [])}
+        signals = _strategy_signal_defs(engine, sid)
         rows = _ranked_rows(result)
         for row in rows[:max_per_strategy]:
             symbol = str(row.get("symbol") or "").split(".")[0].zfill(6)
             if not symbol or symbol in seen:
                 continue
             seen.add(symbol)
-            entries.append(_make_entry(symbol, sid, row, src, as_of, source="evolved"))
+            entries.append(_make_entry(symbol, sid, row, src, as_of, source="evolved",
+                                       entry_hits=entry_hits.get(symbol) or [],
+                                       exit_hits=exit_hits.get(symbol) or [],
+                                       signals=signals,
+                                       tp_pct=tp_pct, stop_pct=stop_pct))
 
     # 自选股补充池: 用第一个可用策略对自选跑单池信号
     watch_symbols = [s for s in _watchlist_symbols(data_dir) if s not in seen]
@@ -237,13 +246,20 @@ def generate_plan(
             )
             result = engine.run(base["strategy_id"], context, pool=watch_symbols,
                                 params=base["params"] or None)
+            entry_hits = {str(h["symbol"]).zfill(6): h.get("signals") or [] for h in getattr(result, "entry_signal_hits", [])}
+            exit_hits = {str(h["symbol"]).zfill(6): h.get("signals") or [] for h in getattr(result, "exit_signal_hits", [])}
+            signals = _strategy_signal_defs(engine, base["strategy_id"])
             for row in _ranked_rows(result):
                 symbol = str(row.get("symbol") or "").split(".")[0].zfill(6)
                 if not symbol or symbol in seen:
                     continue
                 seen.add(symbol)
                 entries.append(_make_entry(symbol, base["strategy_id"], row, base, as_of,
-                                           source="watchlist"))
+                                           source="watchlist",
+                                           entry_hits=entry_hits.get(symbol) or [],
+                                           exit_hits=exit_hits.get(symbol) or [],
+                                           signals=signals,
+                                           tp_pct=tp_pct, stop_pct=stop_pct))
         except Exception as e:  # noqa: BLE001
             logger.warning("自选补充扫描失败: %s", e)
 
@@ -283,11 +299,14 @@ def _ranked_rows(result) -> list[dict]:
 
 
 def _make_entry(symbol: str, strategy_id: str, row: dict, src: dict, as_of: date_cls,
-                source: str) -> dict:
+                source: str, *, entry_hits: list[str] | None = None,
+                exit_hits: list[str] | None = None, signals: dict | None = None,
+                tp_pct: float = 0.05, stop_pct: float = 0.03) -> dict:
     ref = _last_close(as_of, src, row)
     entry_low = round(ref * 0.995, 3) if ref else None
     entry_high = round(ref * 1.005, 3) if ref else None
-    stop = round(ref * 0.97, 3) if ref else None
+    stop = round(ref * (1 - stop_pct), 3) if ref else None
+    take_profit = round(ref * (1 + tp_pct), 3) if ref else None
     return {
         "symbol": symbol,
         "strategy_id": strategy_id,
@@ -295,12 +314,28 @@ def _make_entry(symbol: str, strategy_id: str, row: dict, src: dict, as_of: date
         "score": round(float(row.get("score") or 0), 2),
         "source": source,
         "signal": _signal_text(row),
+        "entry_signal": (entry_hits[0] if entry_hits else ((signals or {}).get("entry") or "")) or "无",
+        "exit_signal": (exit_hits[0] if exit_hits else ((signals or {}).get("exit") or "")) or "无",
         "reference_price": ref,
         "entry_low": entry_low,
         "entry_high": entry_high,
+        "take_profit": take_profit,
         "stop_loss": stop,
         "position_pct": 0,  # 盘前等权示意, 实盘按资金分配
     }
+
+
+def _strategy_signal_defs(engine, strategy_id: str) -> dict:
+    """策略声明的加入/退出信号名 (entry_signals[0] / exit_signals[0] 可读名)。"""
+    try:
+        s = engine.get(strategy_id)
+        return {
+            "entry": (s.entry_signals or [""])[0],
+            "exit": (s.exit_signals or [""])[0],
+        }
+    except Exception as e:  # noqa: BLE001
+        logger.warning("读取策略 %s 信号定义失败: %s", strategy_id, e)
+        return {"entry": "", "exit": ""}
 
 
 def _last_close(as_of: date_cls, src: dict, row: dict) -> float | None:
@@ -405,25 +440,45 @@ def _result_row(entry: dict, row: dict | None, slack: float) -> dict:
         "source": entry.get("source", ""),
         "score": entry.get("score"),
         "reference_price": entry.get("reference_price"),
+        "entry_signal": entry.get("entry_signal", ""),
+        "exit_signal": entry.get("exit_signal", ""),
         "entry_low": entry.get("entry_low"),
         "entry_high": entry.get("entry_high"),
+        "take_profit": entry.get("take_profit"),
+        "stop_loss": entry.get("stop_loss"),
     }
     if row is None:
-        return {**base, "hit": None, "fill_price": None, "pnl_pct": None,
-                "best_pnl_pct": None, "note": "无行情"}
+        return {**base, "hit": None, "fill_price": None, "exit_price": None,
+                "exit_reason": None, "pnl_pct": None, "best_pnl_pct": None,
+                "note": "无行情"}
 
     o, h, l, c = (float(row.get(k)) for k in ("open", "high", "low", "close"))
     entry_low = entry.get("entry_low")
     entry_high = entry.get("entry_high")
     triggered = (entry_low is not None and entry_high is not None
                  and l <= entry_high and h >= entry_low)
-    fill = o if triggered else None
-    pnl = (c / fill - 1.0) if fill else None
+    if not triggered:
+        note = "未触发(区间外)" if entry_low is not None else "无参考区间"
+        return {**base, "open": o, "high": h, "low": l, "close": c,
+                "hit": False, "fill_price": None, "exit_price": None,
+                "exit_reason": None, "pnl_pct": None, "best_pnl_pct": None, "note": note}
+
+    # 加入→退出完整交易: 开盘价建仓; 日线维度按 止盈>止损>收盘 优先级模拟退出
+    fill = o
+    tp = entry.get("take_profit")
+    sl = entry.get("stop_loss")
+    if tp is not None and h >= tp:
+        exit_price, reason = tp, "take_profit"
+    elif sl is not None and l <= sl:
+        exit_price, reason = sl, "stop_loss"
+    else:
+        exit_price, reason = c, "close"
+    pnl = (exit_price / fill - 1.0) if fill else None
     best = (h / fill - 1.0) if fill else None
-    note = "触发" if triggered else ("未触发(区间外)" if entry_low is not None else "无参考区间")
     return {**base, "open": o, "high": h, "low": l, "close": c,
-            "hit": triggered, "fill_price": fill, "pnl_pct": pnl,
-            "best_pnl_pct": best, "note": note}
+            "hit": True, "fill_price": fill, "exit_price": exit_price,
+            "exit_reason": reason, "pnl_pct": pnl,
+            "best_pnl_pct": best, "note": f"触发·{reason}"}
 
 
 def _aggregate(results: list[dict]) -> dict:
@@ -431,6 +486,9 @@ def _aggregate(results: list[dict]) -> dict:
     hits = [r for r in with_data if r.get("hit")]
     wins = [r for r in hits if (r.get("pnl_pct") or 0) > 0]
     pnls = [r.get("pnl_pct") for r in with_data if r.get("pnl_pct") is not None]
+    reasons = {}
+    for r in hits:
+        reasons[r.get("exit_reason") or "close"] = reasons.get(r.get("exit_reason") or "close", 0) + 1
     return {
         "planned": len(results),
         "with_data": len(with_data),
@@ -441,6 +499,7 @@ def _aggregate(results: list[dict]) -> dict:
         "avg_pnl_pct": round(sum(pnls) / len(pnls), 4) if pnls else 0.0,
         "avg_best_pnl_pct": round(
             sum(r.get("best_pnl_pct") or 0 for r in hits) / len(hits), 4) if hits else 0.0,
+        "exits": reasons,
         "best_symbol": max((r for r in with_data if r.get("pnl_pct") is not None),
                            key=lambda r: r["pnl_pct"], default=None)["symbol"] if with_data else None,
         "worst_symbol": min((r for r in with_data if r.get("pnl_pct") is not None),

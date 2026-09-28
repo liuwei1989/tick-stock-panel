@@ -76,8 +76,14 @@ def test_generate_plan_evolved_scan_and_watchlist(tmp_path, monkeypatch):
         "strategy_a": StrategyResult(
             as_of=__import__("datetime").date(2026, 9, 24), strategy_id="strategy_a",
             rows=[_row("000001.SZ", 92.0, 11.2), _row("000002.SZ", 88.0, 22.5)],
+            entry_signal_hits=[{"symbol": "000001.SZ", "signals": ["signal_ma_golden_cross"]}],
+            exit_signal_hits=[{"symbol": "000001.SZ", "signals": ["signal_ma20_breakdown"]}],
             total=2),
     })
+    class WithDefs:
+        entry_signals = ["signal_ma_golden_cross"]
+        exit_signals = ["signal_ma20_breakdown"]
+    engine.get = lambda strategy_id: WithDefs()
     plan = wf.generate_plan(data_dir, engine=engine, max_entries=20, max_per_strategy=8)
     assert plan["ok"] is True
     assert plan["trade_date"] == "2026-09-24"
@@ -87,6 +93,13 @@ def test_generate_plan_evolved_scan_and_watchlist(tmp_path, monkeypatch):
     assert "000001" in symbols and "000002" in symbols
     # 全部条目来自进化扫描 (自选标的未在扫描结果中, watchlist 池也要有信号才进)
     assert all(e["source"] == "evolved" for e in plan["entries"])
+    # 加入/退出信号与止盈止损价
+    e1 = next(e for e in plan["entries"] if e["symbol"] == "000001")
+    assert e1["entry_signal"] == "signal_ma_golden_cross"
+    assert e1["exit_signal"] == "signal_ma20_breakdown"
+    assert e1["take_profit"] == round(11.2 * 1.05, 3)
+    assert e1["stop_loss"] == round(11.2 * 0.97, 3)
+    assert all(e["entry_signal"] and e["exit_signal"] for e in plan["entries"])
     # 计划文件已落盘
     assert (data_dir / "plans" / f"{plan['plan_id']}.json").exists()
 
@@ -103,6 +116,12 @@ def test_generate_plan_watchlist_merge(monkeypatch, tmp_path):
     class Watcher:
         def __init__(self):
             self.pool_calls = []
+
+        def get(self, strategy_id):
+            class WithDefs:
+                entry_signals = ["signal_n_day_low_reversal"]
+                exit_signals = ["signal_n_day_high_recovery"]
+            return WithDefs()
 
         def run(self, strategy_id, context, pool=None, params=None, overrides=None):
             if pool == ["600001", "600002"]:
@@ -157,12 +176,13 @@ def test_review_plan_hit_and_miss(tmp_path):
     _make_plan_file(data_dir, [
         {"symbol": "000001", "strategy_id": "strategy_a", "strategy_name": "策略A",
          "source": "evolved", "score": 92.0, "reference_price": 11.0,
-         "entry_low": 10.945, "entry_high": 11.055},
+         "entry_low": 10.945, "entry_high": 11.055, "take_profit": 11.55, "stop_loss": 10.67,
+         "entry_signal": "signal_a", "exit_signal": "signal_b"},
         {"symbol": "600000", "strategy_id": "strategy_a", "strategy_name": "策略A",
          "source": "evolved", "score": 88.0, "reference_price": 9.0,
-         "entry_low": 8.955, "entry_high": 9.045},
+         "entry_low": 8.955, "entry_high": 9.045, "take_profit": 9.45, "stop_loss": 8.73},
     ])
-    # 000001 触发 (low 10.9 ≤ 11.055), 600000 未触发 (high 8.9 < 8.955)
+    # 000001 触发且 high 11.8 ≥ 止盈 11.55 → 止盈退出; 600000 未触发 (high 8.9 < 8.955)
     _seed_enriched_day(data_dir, "2026-09-25", [
         {"symbol": "000001", "open": 11.0, "high": 11.8, "low": 10.9, "close": 11.6},
         {"symbol": "600000", "open": 8.9, "high": 8.9, "low": 8.7, "close": 8.8},
@@ -173,12 +193,17 @@ def test_review_plan_hit_and_miss(tmp_path):
     by_sym = {r["symbol"]: r for r in review["results"]}
     assert by_sym["000001"]["hit"] is True
     assert by_sym["000001"]["fill_price"] == 11.0
-    assert abs(by_sym["000001"]["pnl_pct"] - (11.6 / 11.0 - 1)) < 1e-9
+    assert by_sym["000001"]["exit_price"] == 11.55
+    assert by_sym["000001"]["exit_reason"] == "take_profit"
+    assert abs(by_sym["000001"]["pnl_pct"] - (11.55 / 11.0 - 1)) < 1e-9
+    assert by_sym["000001"]["entry_signal"] == "signal_a"
+    assert by_sym["000001"]["exit_signal"] == "signal_b"
     assert by_sym["600000"]["hit"] is False
     assert by_sym["600000"]["pnl_pct"] is None
     summary = review["summary"]
     assert summary["planned"] == 2 and summary["triggered"] == 1
     assert summary["win_rate"] == 1.0
+    assert summary["exits"] == {"take_profit": 1}
     # 策略反馈已写
     fb = wf.load_feedback(data_dir)
     assert len(fb) == 1 and fb[0]["strategy_id"] == "strategy_a"
@@ -186,6 +211,29 @@ def test_review_plan_hit_and_miss(tmp_path):
     # 计划状态已更新
     plan = wf.get_plan(data_dir, "P20260924-001")
     assert plan["status"] == "reviewed" and plan["review_id"] == review["review_id"]
+
+
+def test_review_plan_stop_loss_and_close_exit(tmp_path):
+    """触发但盘中破止损 → 止损退出; 无触止盈止损 → 收盘退出。"""
+    data_dir = _regime(tmp_path)
+    _make_plan_file(data_dir, [
+        {"symbol": "000001", "strategy_id": "strategy_a", "reference_price": 10.0,
+         "entry_low": 9.95, "entry_high": 10.05, "take_profit": 10.5, "stop_loss": 9.7},
+        {"symbol": "600000", "strategy_id": "strategy_a", "reference_price": 20.0,
+         "entry_low": 19.9, "entry_high": 20.1, "take_profit": 21.0, "stop_loss": 19.4},
+    ])
+    _seed_enriched_day(data_dir, "2026-09-25", [
+        {"symbol": "000001", "open": 10.0, "high": 10.2, "low": 9.6, "close": 9.8},   # 破止损 9.7
+        {"symbol": "600000", "open": 20.0, "high": 20.5, "low": 19.95, "close": 20.3},  # 无触线
+    ])
+    review = wf.review_plan(data_dir, "P20260924-001", trade_date="2026-09-25")
+    by_sym = {r["symbol"]: r for r in review["results"]}
+    assert by_sym["000001"]["exit_reason"] == "stop_loss"
+    assert by_sym["000001"]["exit_price"] == 9.7
+    assert abs(by_sym["000001"]["pnl_pct"] - (9.7 / 10.0 - 1)) < 1e-9
+    assert by_sym["600000"]["exit_reason"] == "close"
+    assert by_sym["600000"]["exit_price"] == 20.3
+    assert review["summary"]["exits"] == {"stop_loss": 1, "close": 1}
 
 
 def test_review_plan_already_reviewed(tmp_path):

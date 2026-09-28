@@ -44,6 +44,8 @@ from app.api import (
     watchlist,
     workflow,
     cockpit,
+    premarket_report,
+    topic_table,
 )
 from app.api import auth as auth_api
 from app.api import settings as settings_api
@@ -514,6 +516,8 @@ app.include_router(factors.router)
 app.include_router(evolution.router)
 app.include_router(workflow.router)
 app.include_router(cockpit.router)
+app.include_router(premarket_report.router)
+app.include_router(topic_table.router)
 app.include_router(mining.router)
 app.include_router(intraday.router)
 app.include_router(indices.router)

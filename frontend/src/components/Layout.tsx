@@ -58,6 +58,7 @@ import {
   PanelLeft,
   PanelLeftClose,
   PanelLeftOpen,
+  Crown, Newspaper, Trophy, Gavel, Table2,
 } from 'lucide-react'
 import { Logo } from './Logo'
 import { api, type CapabilityMatrix, type IndexQuote } from '@/lib/api'
@@ -99,6 +100,11 @@ const nav = [
   { to: '/industry-analysis', label: '行业分析', icon: Landmark },
   { to: '/financials', label: '财务分析', icon: FileText },
   { to: '/monitor', label: '监控中心', icon: RadioTower },
+  { to: '/mainline', label: '主线认证', icon: Crown },
+  { to: '/premarket', label: '盘前研报', icon: Newspaper },
+  { to: '/dragon-tiger', label: '龙虎榜', icon: Trophy },
+  { to: '/auction', label: '竞价定盘', icon: Gavel },
+  { to: '/topics', label: '题材表格', icon: Table2 },
   { to: '/regime', label: '市场环境', icon: Gauge },
   { to: '/abnormal', label: '异动监控', icon: Siren },
   { to: '/lots',       label: '持仓提醒', icon: Layers2 },

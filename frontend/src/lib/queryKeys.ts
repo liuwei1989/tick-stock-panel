@@ -113,6 +113,11 @@ export const QK = {
   evolutionApplied:         ['evolution', 'applied'] as const,
   evolutionEnvGate:         ['evolution', 'env-gate'] as const,
   cockpitOverview:       ['cockpit', 'overview'] as const,
+  premarketReport:        ['premarket', 'report'] as const,
+  premarketList:          ['premarket', 'list'] as const,
+  topicTable:             ['topic-table', 'list'] as const,
+  topicMembers:           (topic: string) => ['topic-table', 'members', topic] as const,
+
   workflowOverview:     ['workflow', 'overview'] as const,
   workflowPlans:        (date?: string) => ['workflow', 'plans', date ?? 'all'] as const,
   workflowPlan:         (planId: string) => ['workflow', 'plan', planId] as const,

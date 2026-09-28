@@ -2447,6 +2447,74 @@ export interface CockpitOverview {
   alerts: { level: 'error' | 'warn' | 'info'; title: string; detail: string }[]
 }
 
+// ===== 盘前结构化研报 =====
+export interface PremarketMainlineTop {
+  member: string
+  level: string
+  level_label: string
+  score: number
+  streak_days: number
+  limit_up_count: number
+  max_boards: number
+  leader_symbol: string | null
+}
+export interface PremarketReport {
+  as_of: string
+  environment: string
+  mainline_top: PremarketMainlineTop[]
+  leaders: { member: string; symbol: string | null; level: string; streak_days: number; score: number; max_boards: number }[]
+  catalysts: { member: string; event: string; watch: string | null }[]
+  plan: { plan_id: string; trade_date: string; status: string; entries: number } | null
+  summary: string
+  available: boolean
+  ai?: boolean
+  content?: string
+  created_at?: string
+}
+
+// ===== 题材表格 =====
+export interface TopicTableRow {
+  member: string
+  level: string
+  score: number
+  avg5_score: number
+  streak_days: number
+  limit_up_count: number
+  max_boards: number
+  leader_symbol: string | null
+  latest_date: string
+  custom_members: string[]
+  member_count: number
+}
+export interface TopicTable {
+  available: boolean
+  detail?: string
+  as_of?: string
+  gold_count?: number
+  rows: TopicTableRow[]
+}
+export interface TopicMember {
+  symbol: string
+  source: string
+}
+export interface TopicMembers {
+  topic: string
+  members: TopicMember[]
+  ext_count: number
+  custom_count: number
+  leader_symbol: string | null
+}
+export interface TopicOcrResult {
+  ok?: boolean
+  message?: string
+  provider?: string
+  raw_text?: string
+  codes?: string[]
+  candidates?: { code: string; symbol: string; name: string; matched: boolean }[]
+  matched_count?: number
+  unmatched_count?: number
+}
+
 // ===== API surface =====
 export const api = {
   health: () => request<{ status: string; version: string; mode: string }>('/health'),
@@ -2523,6 +2591,72 @@ export const api = {
   capabilityMatrix: () => request<CapabilityMatrix>('/api/settings/capability-matrix'),
   workflowOverview: () => request<WorkflowOverview>('/api/workflow/overview'),
   cockpitOverview: () => request<CockpitOverview>('/api/cockpit/overview'),
+  premarketLatest: () => request<PremarketReport>('/api/premarket-report'),
+  premarketList: (limit = 30) =>
+    request<{ reports: PremarketReport[] }>(`/api/premarket-report/list?limit=${limit}`),
+  premarketContext: (date?: string) =>
+    request<PremarketReport>(`/api/premarket-report/context${date ? `?date=${encodeURIComponent(date)}` : ''}`),
+  /** 流式 AI 盘前研报 (NDJSON, 与大盘复盘同协议) */
+  async *premarketGenerate(date?: string, focus?: string): AsyncGenerator<{
+    type: 'meta' | 'delta' | 'error' | 'done'
+    as_of?: string
+    summary?: string
+    fallback?: boolean
+    content?: string
+    message?: string
+    report?: PremarketReport
+  }> {
+    const res = await fetch('/api/premarket-report/generate', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ date: date ?? null, focus: focus ?? '' }),
+    })
+    if (!res.ok) {
+      const e = await res.json().catch(() => null)
+      throw new ApiError(e?.message ?? `HTTP ${res.status}`, res.status)
+    }
+    if (res.headers.get('content-type')?.includes('application/json')) {
+      const j = await res.json()
+      if (j.fallback) {
+        yield { type: 'meta', as_of: j.report?.as_of, summary: j.report?.summary, fallback: true }
+        yield { type: 'done', report: j.report }
+      }
+      return
+    }
+    const reader = res.body?.getReader()
+    if (!reader) return
+    const dec = new TextDecoder()
+    let buf = ''
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += dec.decode(value, { stream: true })
+      const lines = buf.split('\n')
+      buf = lines.pop() ?? ''
+      for (const line of lines) {
+        if (!line.trim()) continue
+        try { yield JSON.parse(line) } catch { /* ignore */ }
+      }
+    }
+    if (buf.trim()) {
+      try { yield JSON.parse(buf.trim()) } catch { /* ignore */ }
+    }
+  },
+  topicTable: () => request<TopicTable>('/api/topic-table'),
+  topicMembers: (topic: string) =>
+    request<TopicMembers>(`/api/topic-table/${encodeURIComponent(topic)}/members`),
+  topicOcrImport: (topic: string, file: File) => {
+    const fd = new FormData()
+    fd.append('file', file)
+    return request<TopicOcrResult>(`/api/topic-table/${encodeURIComponent(topic)}/ocr-import`, {
+      method: 'POST', body: fd,
+    })
+  },
+  topicSaveMembers: (topic: string, symbols: string[]) =>
+    request<{ topic: string; symbols: string[] }>(`/api/topic-table/${encodeURIComponent(topic)}/members`, {
+      method: 'PUT', body: JSON.stringify({ symbols }),
+    }),
+
   evolutionRun: (body: EvolutionRunConfig) =>
     request<EvolutionRecord & { progress?: string[] }>('/api/evolution/run', {
       method: 'POST',

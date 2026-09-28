@@ -1561,6 +1561,13 @@ class StrategyBacktestService:
 
             candidate_filter_mask = self._build_candidate_filter_mask(panel, s, params)
             candidate_mask = basic_mask & candidate_filter_mask
+            # filter_history strategies may compute a dynamic score that does not
+            # exist in the source enriched panel (for example a fixed legacy score
+            # plus risk/reward priority).  The candidate mask intentionally keeps
+            # only (symbol,date), so restore the declared order field before
+            # _apply_score; otherwise every backtest entry would receive score 0
+            # and score_min/entry_score would diverge from live selection.
+            panel = self._attach_history_order_score(panel, s, params)
             panel = self._apply_score(panel, s, overrides, universe_mask=candidate_mask, factor_snapshot=factor_snapshot)
             formal_candidate_mask = candidate_mask & formal_range
             entry_mask = self._build_entry_mask_from_candidate(panel, candidate_mask, s, entry_signals)
@@ -2292,6 +2299,39 @@ class StrategyBacktestService:
 
         # 没有策略候选层时, 由 entry_signals 直接决定买点。
         return true_mask
+
+    @staticmethod
+    def _attach_history_order_score(
+        panel: pl.DataFrame,
+        strategy: StrategyDef,
+        params: dict,
+    ) -> pl.DataFrame:
+        """Join a filter_history-computed order field back to the source panel.
+
+        Dynamic history strategies return a derived ``order_by`` column along
+        with their hits, but the backtest keeps the original panel for pricing
+        and only materializes a boolean candidate mask.  Joining the field here
+        preserves the strategy's ranking and entry score without changing the
+        candidate-mask contract used by existing strategies.
+        """
+        if not strategy.filter_history_fn:
+            return panel
+        order_by = strategy.meta.get("order_by")
+        if not order_by or order_by == "score" or order_by in panel.columns:
+            return panel
+        if "symbol" not in panel.columns or "date" not in panel.columns:
+            return panel
+        try:
+            scored = strategy.filter_history_fn(panel, params)
+            if scored is None or scored.is_empty() or order_by not in scored.columns:
+                return panel
+            score_frame = scored.select(["symbol", "date", str(order_by)]).unique(
+                subset=["symbol", "date"], keep="last"
+            )
+            return panel.join(score_frame, on=["symbol", "date"], how="left")
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("history order score materialization failed: %s", exc)
+            return panel
 
     def _build_entry_mask_from_candidate(
         self,

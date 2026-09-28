@@ -91,8 +91,8 @@ export default function Cockpit() {
     <div className="space-y-4">
       <PageHeader
         title="驾驶舱"
-        desc="一屏聚合数据链路 / 市场环境 / 主线认证 / 工作流状态, 异常自动高亮"
-        actions={
+        subtitle="一屏聚合数据链路 / 市场环境 / 主线认证 / 工作流状态, 异常自动高亮"
+        right={
           <button
             className="btn btn-ghost btn-sm"
             onClick={() => overview.refetch()}

@@ -2200,6 +2200,107 @@ export interface SectorRotationUniverseItem {
 }
 
 // ===== Workflow (策略发现→盘前计划→复盘 闭环) =====
+// ── 策略进化 ───────────────────────────────────────────────
+export interface WalkForwardStats {
+  window_count: number
+  active_windows: number
+  positive_windows: number
+  positive_window_ratio: number
+  avg_total_return: number
+  worst_total_return: number
+  avg_max_drawdown: number
+  worst_max_drawdown: number
+  avg_profit_quality_score: number
+  avg_expectancy: number
+  avg_win_rate: number
+  total_trades: number
+  return_std: number
+  stability_score: number
+}
+
+export interface ValidateStats {
+  n_trades: number
+  total_return: number
+  max_drawdown: number
+  win_rate: number
+  profit_factor: number | null
+  profit_quality_score: number
+  [key: string]: number | null
+}
+
+export interface EvolutionCandidate {
+  name: string
+  strategy_params: Record<string, number | string>
+  exec_params: Record<string, number | string>
+  validate: ValidateStats
+  walk_forward: WalkForwardStats
+  score: number
+  metadata?: Record<string, unknown>
+}
+
+export interface EvolutionRecommendation {
+  name: string
+  strategy_params: Record<string, number | string>
+  exec_params: Record<string, number | string>
+  validate: ValidateStats
+  walk_forward: WalkForwardStats
+  score: number
+  metadata?: Record<string, unknown>
+}
+
+export interface EvolutionRecord {
+  run_id: string
+  strategy_id: string
+  status: 'recommended' | 'no_improvement'
+  created_at: string
+  windows: { validate_start: string; validate_end: string }[]
+  config: Record<string, number | string>
+  baseline: { name: string; validate: ValidateStats; walk_forward: WalkForwardStats; score: number } | null
+  candidates: EvolutionCandidate[]
+  recommendation: EvolutionRecommendation | null
+}
+
+export interface EvolutionRunConfig {
+  strategy_id: string
+  train_days: number
+  validate_days: number
+  walk_forward_windows: number
+  max_candidates: number
+  min_validation_trades: number
+  min_positive_windows: number
+  min_positive_window_ratio: number
+  min_stability_score: number
+  max_positions: number
+  holding_days: number
+  symbols?: string[] | null
+  iterative_seeds: boolean
+}
+
+export interface EnvGateSuggestion {
+  available: boolean
+  detail?: string
+  date?: string | null
+  regime?: {
+    date: string
+    score: number | null
+    state: string | null
+    state_label: string | null
+    phase: string | null
+    phase_label: string | null
+  } | null
+  suggestion: string
+  default_params: { min_score: number; max_results: number }
+  applied_params: { min_score: number; max_results: number }
+}
+
+export interface AppliedOverride {
+  run_id: string
+  name: string
+  params: Record<string, number | string>
+  exec_params: Record<string, number | string>
+  applied_at: string
+}
+
 export interface WorkflowPlanEntry {
   symbol: string
   strategy_id: string
@@ -2372,6 +2473,23 @@ export const api = {
   dataSources: () => request<DataSourcesResponse>('/api/settings/data-sources'),
   capabilityMatrix: () => request<CapabilityMatrix>('/api/settings/capability-matrix'),
   workflowOverview: () => request<WorkflowOverview>('/api/workflow/overview'),
+  evolutionRun: (body: EvolutionRunConfig) =>
+    request<EvolutionRecord & { progress?: string[] }>('/api/evolution/run', {
+      method: 'POST',
+      body: JSON.stringify(body),
+    }),
+  evolutionRecommendations: (limit = 20) =>
+    request<{ count: number; records: EvolutionRecord[] }>(`/api/evolution/recommendations?limit=${limit}`),
+  evolutionApplied: () => request<{ applied: Record<string, AppliedOverride> }>('/api/evolution/applied'),
+  evolutionApply: (runId: string) =>
+    request<{ ok: boolean; strategy_id: string; applied: AppliedOverride }>(`/api/evolution/recommendations/${encodeURIComponent(runId)}/apply`, {
+      method: 'POST',
+    }),
+  evolutionClearApplied: (strategyId: string) =>
+    request<{ ok: boolean; error?: string }>(`/api/evolution/recommendations/applied/${encodeURIComponent(strategyId)}`, {
+      method: 'DELETE',
+    }),
+  evolutionEnvGate: () => request<EnvGateSuggestion>('/api/evolution/env-gate/suggestion'),
   workflowGeneratePlan: (body: { trade_date?: string; max_entries?: number; max_per_strategy?: number; use_evolution?: boolean }) =>
     request<WorkflowPlan & { ok: boolean; error?: string }>('/api/workflow/plan/generate', {
       method: 'POST',

@@ -118,6 +118,12 @@ def clear_applied_rec(strategy_id: str, req: Request):
     return result
 
 
+@router.get("/applied")
+def applied_overrides(req: Request):
+    """各策略已应用的进化参数 (evolution_applied.json)。"""
+    return {"applied": get_applied_overrides(_data_dir(req))}
+
+
 @router.get("/env-gate/suggestion")
 def env_gate_suggestion(req: Request):
     """当前市场环境下的选股参数建议 (环境门控)。

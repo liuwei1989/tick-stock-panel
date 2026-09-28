@@ -109,6 +109,9 @@ export const QK = {
 
   // 模拟盘 (多账户: 键按账户隔离; paperAll 作账户无关失效前缀)
   paperAll:             ['paper'] as const,
+  evolutionRecommendations: ['evolution', 'recommendations'] as const,
+  evolutionApplied:         ['evolution', 'applied'] as const,
+  evolutionEnvGate:         ['evolution', 'env-gate'] as const,
   workflowOverview:     ['workflow', 'overview'] as const,
   workflowPlans:        (date?: string) => ['workflow', 'plans', date ?? 'all'] as const,
   workflowPlan:         (planId: string) => ['workflow', 'plan', planId] as const,

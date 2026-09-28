@@ -27,6 +27,7 @@ class GeneratePlanRequest(BaseModel):
 
 class ReviewRequest(BaseModel):
     trade_date: str | None = None
+    track_days: int = 1
 
 
 @router.post("/plan/generate")
@@ -65,7 +66,7 @@ def get_plan(plan_id: str, request: Request) -> dict:
 def review_plan(plan_id: str, req: ReviewRequest, request: Request) -> dict:
     """程序化复盘: 对照计划逐标的算触发/收益/胜率 + 策略反馈回写。"""
     data_dir = _data_dir(request)
-    return wf.review_plan(data_dir, plan_id, trade_date=req.trade_date)
+    return wf.review_plan(data_dir, plan_id, trade_date=req.trade_date, track_days=req.track_days)
 
 
 @router.get("/reviews")

@@ -236,6 +236,55 @@ def test_review_plan_stop_loss_and_close_exit(tmp_path):
     assert review["summary"]["exits"] == {"stop_loss": 1, "close": 1}
 
 
+def test_review_plan_hold_period_tracking(tmp_path):
+    """持有期口径: 加入后逐日跟踪到止盈/止损/到期(max_hold)退出。"""
+    data_dir = _regime(tmp_path)
+    _make_plan_file(data_dir, [
+        {"symbol": "000001", "strategy_id": "strategy_a", "reference_price": 10.0,
+         "entry_low": 9.95, "entry_high": 10.05, "take_profit": 10.5, "stop_loss": 9.7},
+        {"symbol": "600000", "strategy_id": "strategy_a", "reference_price": 20.0,
+         "entry_low": 19.9, "entry_high": 20.1, "take_profit": 21.0, "stop_loss": 19.4},
+        {"symbol": "000002", "strategy_id": "strategy_a", "reference_price": 15.0,
+         "entry_low": 14.93, "entry_high": 15.08, "take_profit": 15.75, "stop_loss": 14.55},
+    ])
+    # 3 个交易日: 000001 第2日止盈; 600000 全程未触线 → 第3日 max_hold;
+    # 000002 第1日触发 (前一日在区间外), 第2日破止损
+    _seed_enriched_day(data_dir, "2026-09-24", [
+        {"symbol": "000001", "open": 10.0, "high": 10.2, "low": 10.0, "close": 10.1},
+        {"symbol": "600000", "open": 20.0, "high": 20.3, "low": 19.9, "close": 20.1},
+        {"symbol": "000002", "open": 15.0, "high": 15.05, "low": 14.95, "close": 15.0},
+    ])
+    _seed_enriched_day(data_dir, "2026-09-25", [
+        {"symbol": "000001", "open": 10.1, "high": 10.4, "low": 10.05, "close": 10.3},
+        {"symbol": "600000", "open": 20.1, "high": 20.6, "low": 20.0, "close": 20.4},
+        {"symbol": "000002", "open": 15.0, "high": 15.1, "low": 14.9, "close": 15.0},
+    ])
+    _seed_enriched_day(data_dir, "2026-09-28", [
+        {"symbol": "000001", "open": 10.3, "high": 10.6, "low": 10.2, "close": 10.5},
+        {"symbol": "600000", "open": 20.4, "high": 20.7, "low": 20.2, "close": 20.5},
+        {"symbol": "000002", "open": 14.9, "high": 15.0, "low": 14.5, "close": 14.6},
+    ])
+    review = wf.review_plan(data_dir, "P20260924-001", trade_date="2026-09-24", track_days=3)
+    by_sym = {r["symbol"]: r for r in review["results"]}
+    # 000001: 第0日触发, 第2日(09-28) high 10.6 ≥ tp 10.5 → 止盈
+    r1 = by_sym["000001"]
+    assert r1["hit"] is True and r1["exit_reason"] == "take_profit"
+    assert r1["exit_date"] == "2026-09-28" and r1["hold_days"] == 2
+    assert abs(r1["pnl_pct"] - (10.5 / 10.0 - 1)) < 1e-9
+    # 600000: 第0日触发, 全程未触线 → 第2日到期 max_hold 收盘退出
+    r2 = by_sym["600000"]
+    assert r2["hit"] is True and r2["exit_reason"] == "max_hold"
+    assert r2["exit_date"] == "2026-09-28" and r2["hold_days"] == 2
+    assert r2["exit_price"] == 20.5
+    # 000002: 第1日(09-25) low 14.9 ≤ sl 14.55? 否; 第2日(09-28) low 14.5 ≤ 14.55 → 止损
+    r3 = by_sym["000002"]
+    assert r3["hit"] is True and r3["exit_reason"] == "stop_loss"
+    assert r3["exit_date"] == "2026-09-28" and r3["exit_price"] == 14.55
+    summary = review["summary"]
+    assert summary["exits"] == {"take_profit": 1, "max_hold": 1, "stop_loss": 1}
+    assert summary["avg_hold_days"] == 2.0
+
+
 def test_review_plan_already_reviewed(tmp_path):
     data_dir = _regime(tmp_path)
     _make_plan_file(data_dir, [

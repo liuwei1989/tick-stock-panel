@@ -2242,7 +2242,9 @@ export interface WorkflowReviewResult {
   hit: boolean | null
   fill_price: number | null
   exit_price: number | null
+  exit_date: string | null
   exit_reason: string | null
+  hold_days: number | null
   pnl_pct: number | null
   best_pnl_pct: number | null
   note: string
@@ -2257,6 +2259,7 @@ export interface WorkflowReviewSummary {
   avg_pnl_pct: number
   avg_best_pnl_pct: number
   exits: Record<string, number>
+  avg_hold_days: number
   best_symbol?: string | null
   worst_symbol?: string | null
 }
@@ -2378,7 +2381,7 @@ export const api = {
     request<{ plans: WorkflowPlan[]; total: number }>(`/api/workflow/plans${date ? `?date=${encodeURIComponent(date)}` : ''}`),
   workflowPlan: (planId: string) =>
     request<WorkflowPlan>(`/api/workflow/plans/${encodeURIComponent(planId)}`),
-  workflowReviewPlan: (planId: string, body: { trade_date?: string }) =>
+  workflowReviewPlan: (planId: string, body: { trade_date?: string; track_days?: number }) =>
     request<WorkflowReview & { ok: boolean; error?: string; already_reviewed?: boolean }>(`/api/workflow/plan/${encodeURIComponent(planId)}/review`, {
       method: 'POST',
       body: JSON.stringify(body),

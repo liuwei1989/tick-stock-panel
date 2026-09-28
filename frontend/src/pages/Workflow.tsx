@@ -25,6 +25,7 @@ import { toast } from '@/components/Toast'
 function exitLabel(k: string): string {
   if (k === 'take_profit') return '止盈'
   if (k === 'stop_loss') return '止损'
+  if (k === 'max_hold') return '到期'
   return '收盘'
 }
 
@@ -51,6 +52,7 @@ export default function Workflow() {
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [reviewOpen, setReviewOpen] = useState(false)
   const [maxEntries, setMaxEntries] = useState(20)
+  const [trackDays, setTrackDays] = useState(5)
 
   const overview = useQuery({ queryKey: QK.workflowOverview, queryFn: api.workflowOverview })
   const plansQ = useQuery({ queryKey: QK.workflowPlans(), queryFn: () => api.workflowPlans() })
@@ -74,7 +76,7 @@ export default function Workflow() {
   })
 
   const review = useMutation({
-    mutationFn: (planId: string) => api.workflowReviewPlan(planId, {}),
+    mutationFn: (planId: string) => api.workflowReviewPlan(planId, { track_days: trackDays }),
     onSuccess: (r) => {
       if (!r.ok) { toast(r.error ?? '复盘失败', 'error'); return }
       toast(r.already_reviewed ? '该计划已复盘过, 展示既有结果' : '复盘完成', 'success')
@@ -203,14 +205,26 @@ export default function Workflow() {
                       <FileText className="size-3.5" /> {reviewOpen ? '收起复盘' : '查看复盘'}
                     </button>
                   ) : (
-                    <button
-                      onClick={() => review.mutate(plan.plan_id)}
-                      disabled={review.isPending}
-                      className="flex items-center gap-1 rounded-lg bg-emerald-600/90 px-2.5 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
-                    >
-                      {review.isPending ? <Loader2 className="size-3.5 animate-spin" /> : <Target className="size-3.5" />}
-                      程序化复盘
-                    </button>
+                    <div className="flex items-center gap-1">
+                      <select
+                        value={trackDays}
+                        onChange={(e) => setTrackDays(Number(e.target.value))}
+                        className="rounded-lg border border-zinc-800 bg-zinc-900 px-1.5 py-1 text-xs outline-none"
+                        title="持有期跟踪天数 (交易日, 含执行日)"
+                      >
+                        <option value={1}>当日</option>
+                        <option value={5}>5日持有</option>
+                        <option value={10}>10日持有</option>
+                      </select>
+                      <button
+                        onClick={() => review.mutate(plan.plan_id)}
+                        disabled={review.isPending}
+                        className="flex items-center gap-1 rounded-lg bg-emerald-600/90 px-2.5 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+                      >
+                        {review.isPending ? <Loader2 className="size-3.5 animate-spin" /> : <Target className="size-3.5" />}
+                        复盘
+                      </button>
+                    </div>
                   )}
                 </div>
               </div>
@@ -307,6 +321,7 @@ function ReviewPanel({ planId }: { planId: string }) {
         <MiniStat label="触发" value={`${s.triggered}/${s.planned}`} />
         <MiniStat label="胜率" value={fmtPct(s.win_rate * 100) + '%'} tone={s.win_rate >= 0.5 ? 'good' : 'bad'} />
         <MiniStat label="平均收益" value={fmtPct(s.avg_pnl_pct * 100) + '%'} tone={s.avg_pnl_pct > 0 ? 'good' : 'bad'} />
+        <MiniStat label="平均持有" value={s.avg_hold_days != null ? s.avg_hold_days + '日' : '—'} />
         <MiniStat label="平均最佳" value={fmtPct(s.avg_best_pnl_pct * 100) + '%'} />
         <MiniStat label="退出方式" value={Object.entries(s.exits ?? {}).map(([k, v]) => `${exitLabel(k)}×${v}`).join(' ') || '—'} />
         <MiniStat label="最优/最差" value={s.best_symbol ?? '—'} sub={s.worst_symbol ?? '—'} />
@@ -322,6 +337,8 @@ function ReviewPanel({ planId }: { planId: string }) {
               <th className="py-1.5 pr-2 text-right font-medium">收盘</th>
               <th className="py-1.5 pr-2 text-right font-medium">成交价</th>
               <th className="py-1.5 pr-2 text-right font-medium">退出价</th>
+              <th className="py-1.5 pr-2 font-medium">退出日</th>
+              <th className="py-1.5 pr-2 text-right font-medium">持有</th>
               <th className="py-1.5 pr-2 font-medium">退出方式</th>
               <th className="py-1.5 pr-2 text-right font-medium">收益</th>
               <th className="py-1.5 pr-2 text-right font-medium">最佳</th>
@@ -337,10 +354,13 @@ function ReviewPanel({ planId }: { planId: string }) {
                 <td className="py-1.5 pr-2 text-right text-xs text-muted">{r.close ?? '—'}</td>
                 <td className="py-1.5 pr-2 text-right text-xs text-muted">{r.fill_price ?? '—'}</td>
                 <td className="py-1.5 pr-2 text-right text-xs text-muted">{r.exit_price ?? '—'}</td>
+                <td className="py-1.5 pr-2 text-xs text-muted">{r.exit_date ?? '—'}</td>
+                <td className="py-1.5 pr-2 text-right text-xs text-muted">{r.hold_days != null ? r.hold_days + '日' : '—'}</td>
                 <td className="py-1.5 pr-2 text-xs">
                   {r.exit_reason === 'take_profit' && <span className="text-emerald-400">止盈</span>}
                   {r.exit_reason === 'stop_loss' && <span className="text-rose-400">止损</span>}
                   {r.exit_reason === 'close' && <span className="text-muted">收盘</span>}
+                  {r.exit_reason === 'max_hold' && <span className="text-amber-400">到期</span>}
                   {!r.exit_reason && <span className="text-muted">—</span>}
                 </td>
                 <td className={cn('py-1.5 pr-2 text-right', pctClass(r.pnl_pct))}>

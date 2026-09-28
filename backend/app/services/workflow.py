@@ -355,6 +355,16 @@ def _signal_text(row: dict) -> str:
 
 # ── 复盘 ────────────────────────────────────────────────────
 
+def _list_trade_dates(data_dir: Path, start: str, track_days: int) -> list[str]:
+    """从 enriched 分区列交易日, 从 start 起取连续 track_days 个。"""
+    day_dir = data_dir / "kline_daily_enriched"
+    if not day_dir.exists():
+        return []
+    dates = sorted(d.name.split("=", 1)[1] for d in day_dir.glob("date=*"))
+    dates = [d for d in dates if d >= start]
+    return dates[:track_days]
+
+
 def _load_enriched_day(data_dir: Path, trade_date: str) -> pl.DataFrame:
     """读执行日 enriched 行情 (date= 分区 parquet)。"""
     day_dir = data_dir / "kline_daily_enriched" / f"date={trade_date}"
@@ -378,9 +388,16 @@ def review_plan(
     plan_id: str,
     *,
     trade_date: str | None = None,
+    track_days: int = 1,
     buy_slack_pct: float = 0.005,
 ) -> dict:
-    """程序化复盘: 对照计划逐标的算触发/收益/胜率, 回写策略反馈。"""
+    """程序化复盘: 对照计划逐标的算触发/收益/胜率, 回写策略反馈。
+
+    track_days: 持有期跟踪天数 (交易日, 含计划执行日)。
+      =1 单日口径: 执行日触发即按 止盈>止损>收盘 当日退出 (历史兼容);
+      >1 持有期口径: 加入后逐日跟踪到 止盈/止损 触及或到期(max_hold)退出,
+        输出 exit_date/hold_days, 完整还原"从加入到退出"的收益。
+    """
     plan = get_plan(data_dir, plan_id)
     if plan is None:
         return {"ok": False, "error": f"计划 {plan_id} 不存在"}
@@ -392,19 +409,19 @@ def review_plan(
     as_of = trade_date or str(plan.get("trade_date") or "")
     if not as_of:
         return {"ok": False, "error": "缺少复盘日期"}
-    daily = _load_enriched_day(data_dir, as_of)
-    if daily.is_empty():
-        return {"ok": False, "error": f"{as_of} 无 enriched 行情, 无法复盘"}
+    track_days = max(1, int(track_days or 1))
+    dates = _list_trade_dates(data_dir, as_of, track_days)
+    if not dates:
+        return {"ok": False, "error": f"{as_of} 起无 enriched 行情, 无法复盘"}
 
-    by_symbol = {str(r["symbol"]).zfill(6): r for r in daily.to_dicts()}
+    day_maps: list[dict] = []
+    for d in dates:
+        df = _load_enriched_day(data_dir, d)
+        day_maps.append({str(r["symbol"]).zfill(6): r for r in df.to_dicts()})
+
     results: list[dict] = []
     for entry in plan.get("entries", []):
-        symbol = str(entry.get("symbol") or "").zfill(6)
-        row = by_symbol.get(symbol)
-        if row is None:
-            results.append(_result_row(entry, None, None))
-            continue
-        results.append(_result_row(entry, row, buy_slack_pct))
+        results.append(_track_entry(entry, day_maps, dates, buy_slack_pct))
 
     stats = _aggregate(results)
     strategy_feedback = _strategy_feedback(results)
@@ -430,6 +447,79 @@ def review_plan(
     # 策略反馈回写 (供下轮进化参考)
     _append_feedback(data_dir, as_of, strategy_feedback)
     return {"ok": True, **review}
+
+
+def _track_entry(entry: dict, day_maps: list[dict], dates: list[str], slack: float) -> dict:
+    """逐标的完整交易: 执行日触发建仓 → 逐日跟踪到 止盈/止损/到期 退出。"""
+    symbol = str(entry.get("symbol") or "").zfill(6)
+    base = {
+        "symbol": symbol,
+        "strategy_id": entry.get("strategy_id", ""),
+        "strategy_name": entry.get("strategy_name", ""),
+        "source": entry.get("source", ""),
+        "score": entry.get("score"),
+        "reference_price": entry.get("reference_price"),
+        "entry_signal": entry.get("entry_signal", ""),
+        "exit_signal": entry.get("exit_signal", ""),
+        "entry_low": entry.get("entry_low"),
+        "entry_high": entry.get("entry_high"),
+        "take_profit": entry.get("take_profit"),
+        "stop_loss": entry.get("stop_loss"),
+    }
+    first = day_maps[0].get(symbol) if day_maps else None
+    if first is None:
+        return {**base, "hit": None, "fill_price": None, "exit_price": None,
+                "exit_date": None, "exit_reason": None, "hold_days": None,
+                "pnl_pct": None, "best_pnl_pct": None, "note": "无行情"}
+
+    o, h, l, c = (float(first.get(k)) for k in ("open", "high", "low", "close"))
+    entry_low = entry.get("entry_low")
+    entry_high = entry.get("entry_high")
+    triggered = (entry_low is not None and entry_high is not None
+                 and l <= entry_high and h >= entry_low)
+    if not triggered:
+        note = "未触发(区间外)" if entry_low is not None else "无参考区间"
+        return {**base, "open": o, "high": h, "low": l, "close": c,
+                "hit": False, "fill_price": None, "exit_price": None,
+                "exit_date": None, "exit_reason": None, "hold_days": None,
+                "pnl_pct": None, "best_pnl_pct": None, "note": note}
+
+    fill = o
+    tp = entry.get("take_profit")
+    sl = entry.get("stop_loss")
+    exit_price: float | None = None
+    reason = "close"
+    exit_date = dates[0]
+    # 执行日判定: 止盈/止损优先, 否则进入持有期跟踪
+    if tp is not None and h >= tp:
+        exit_price, reason = tp, "take_profit"
+    elif sl is not None and l <= sl:
+        exit_price, reason = sl, "stop_loss"
+    elif len(dates) == 1:
+        exit_price, reason = c, "close"
+    else:
+        for i in range(1, len(dates)):
+            row_i = day_maps[i].get(symbol)
+            if row_i is None:
+                continue  # 停牌/无行情: 顺延跟踪
+            hi, lo, cl = (float(row_i.get(k)) for k in ("high", "low", "close"))
+            if tp is not None and hi >= tp:
+                exit_price, reason, exit_date = tp, "take_profit", dates[i]
+                break
+            if sl is not None and lo <= sl:
+                exit_price, reason, exit_date = sl, "stop_loss", dates[i]
+                break
+            if i == len(dates) - 1:
+                exit_price, reason, exit_date = cl, "max_hold", dates[i]
+        if exit_price is None:  # 全部后续日期停牌
+            exit_price, reason = c, "max_hold"
+    pnl = (exit_price / fill - 1.0) if fill else None
+    best = (h / fill - 1.0) if fill else None
+    hold_days = dates.index(exit_date) if exit_date else 0
+    return {**base, "open": o, "high": h, "low": l, "close": c,
+            "hit": True, "fill_price": fill, "exit_price": exit_price,
+            "exit_date": exit_date, "exit_reason": reason, "hold_days": hold_days,
+            "pnl_pct": pnl, "best_pnl_pct": best, "note": f"触发·{reason}"}
 
 
 def _result_row(entry: dict, row: dict | None, slack: float) -> dict:
@@ -487,8 +577,11 @@ def _aggregate(results: list[dict]) -> dict:
     wins = [r for r in hits if (r.get("pnl_pct") or 0) > 0]
     pnls = [r.get("pnl_pct") for r in with_data if r.get("pnl_pct") is not None]
     reasons = {}
+    holds = []
     for r in hits:
         reasons[r.get("exit_reason") or "close"] = reasons.get(r.get("exit_reason") or "close", 0) + 1
+        if r.get("hold_days") is not None:
+            holds.append(r["hold_days"])
     return {
         "planned": len(results),
         "with_data": len(with_data),
@@ -500,6 +593,7 @@ def _aggregate(results: list[dict]) -> dict:
         "avg_best_pnl_pct": round(
             sum(r.get("best_pnl_pct") or 0 for r in hits) / len(hits), 4) if hits else 0.0,
         "exits": reasons,
+        "avg_hold_days": round(sum(holds) / len(holds), 2) if holds else 0.0,
         "best_symbol": max((r for r in with_data if r.get("pnl_pct") is not None),
                            key=lambda r: r["pnl_pct"], default=None)["symbol"] if with_data else None,
         "worst_symbol": min((r for r in with_data if r.get("pnl_pct") is not None),

@@ -42,6 +42,7 @@ from app.api import (
     strategy,
     today,
     watchlist,
+    workflow,
 )
 from app.api import auth as auth_api
 from app.api import settings as settings_api
@@ -510,6 +511,7 @@ app.include_router(screener.router)
 app.include_router(backtest.router)
 app.include_router(factors.router)
 app.include_router(evolution.router)
+app.include_router(workflow.router)
 app.include_router(mining.router)
 app.include_router(intraday.router)
 app.include_router(indices.router)

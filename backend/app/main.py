@@ -13,6 +13,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app import __version__
 from app.api import (
+    admin_zzshare,
     abnormal,
     alerts,
     analysis,
@@ -234,6 +235,14 @@ async def _application_lifespan(app: FastAPI):
         await ensure_builtin_presets(store.data_dir)
     except Exception as e:  # noqa: BLE001
         logger.warning("内置扩展表初始化失败 (不影响启动): %s", e)
+
+    # 内置扩展表 (涨停原因 ext_uplimit_reason): 同样只创建 config 不拉数据,
+    # 数据由盘后管道 Step 2.75 / 手动拉取 / 历史回补产生。同在 scheduler 前注册。
+    try:
+        from app.services.ext_uplimit_reason import ensure_uplimit_reason_preset
+        await ensure_uplimit_reason_preset(store.data_dir)
+    except Exception as e:
+        logger.warning("涨停原因扩展表初始化失败 (不影响启动): %s", e)
 
     # 扩展数据定时拉取: 在预设配置就绪后启动, 自动调度 enabled 的预设。
     from app.services.ext_pull import pull_scheduler
@@ -518,6 +527,7 @@ app.include_router(workflow.router)
 app.include_router(cockpit.router)
 app.include_router(premarket_report.router)
 app.include_router(topic_table.router)
+app.include_router(admin_zzshare.router)
 app.include_router(mining.router)
 app.include_router(intraday.router)
 app.include_router(indices.router)

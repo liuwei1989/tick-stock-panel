@@ -115,19 +115,39 @@ class ZzshareProvider(MarketDataProvider):
             if not symbol:
                 continue
             ex_raw = str(item.get("exchange") or "").upper()
-            rows.append({
+            row = {
                 "symbol": symbol,
                 "name": item.get("name") or symbol,
                 "code": symbol,
                 "exchange": _EXCHANGE_MAP.get(ex_raw, ex_raw),
                 "asset_type": "stock",
                 "source": self.name,
-            })
+            }
+            # 涨跌停信号 / 新股无涨跌幅窗口 / 换手率所需的维表字段:
+            # listing_date 来自 stock_basic.list_date; float_shares / limit_up /
+            # limit_down 该接口无 → 置空, 由上层走理论价/规则退化路径。
+            raw_list = item.get("list_date") or item.get("listing_date") or ""
+            listing_date = str(raw_list)[:10] if raw_list else None
+            if listing_date:
+                listing_date = f"{listing_date[:4]}-{listing_date[4:6]}-{listing_date[6:8]}"
+                row["listing_date"] = listing_date
+            fsh = item.get("float_share") or item.get("float_shares")
+            if fsh:
+                row["float_shares"] = float(fsh)
+            rows.append(row)
         if not rows:
             return pl.DataFrame()
+        df_out = pl.DataFrame(rows)
+        # 显式补齐可选维表列 (首个 dict 的键决定 polars schema, 缺列须补 None)
+        for col, dtype in (("listing_date", pl.Date), ("float_shares", pl.Float64),
+                           ("limit_up", pl.Float64), ("limit_down", pl.Float64)):
+            if col not in df_out.columns:
+                df_out = df_out.with_columns(pl.lit(None).cast(dtype).alias(col))
         return (
-            pl.DataFrame(rows)
-            .select(INSTRUMENT_COLS)
+            df_out
+            .with_columns(pl.lit(datetime.now().date().isoformat()).alias("as_of"))
+            .select([*INSTRUMENT_COLS, "listing_date", "float_shares",
+                     "limit_up", "limit_down", "as_of"])
             .unique(subset=["symbol"], keep="last")
             .sort("symbol")
         )

@@ -103,6 +103,13 @@ def _presets() -> list[ExtConfig]:
     return [_concept_preset(), _industry_preset()]
 
 
+def all_preset_ids() -> list[str]:
+    """全部内置预设 id (含涨停原因; 供前端/文档枚举)。"""
+    from app.services.ext_uplimit_reason import UP_LIMIT_REASON_ID
+
+    return [c.id for c in _presets()] + [UP_LIMIT_REASON_ID]
+
+
 # ---------------------------------------------------------------------------
 # 接口结构 → 本地 schema 转换 (仅预设使用)
 # ---------------------------------------------------------------------------
@@ -265,6 +272,15 @@ async def fetch_preset(config_id: str, data_dir: Path) -> int:
         ValueError: config_id 不是内置预设
         Exception: 网络请求/解析/写入失败 (由 API 层转 HTTP 错误)
     """
+    # 涨停原因预设有自己的同步链路 (按交易日分区, 复用 PullConfig 通用拉取)。
+    from app.services.ext_uplimit_reason import (
+        UP_LIMIT_REASON_ID,
+        sync_uplimit_reason,
+    )
+
+    if config_id == UP_LIMIT_REASON_ID:
+        return await sync_uplimit_reason(data_dir)
+
     config = get_preset(config_id)
     if config is None:
         raise ValueError(f"未知的内置预设: {config_id}")

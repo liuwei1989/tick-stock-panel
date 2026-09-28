@@ -724,6 +724,42 @@ def run_now(
             stage_errors.append(f"compute_mainline: {e}")
             skipped.append("mainline")
 
+    # Step 2.75: 涨停原因 (ext_uplimit_reason) 盘后拉取 — 次日梯队/复盘展示用。
+    # 通用 ext_pull 配方 (zzshare 开放接口, 按日分区), 该日无数据记 0 不报错。
+    # 软失败: 不阻断主管道, 网络问题次日管道会按同日分区缺失重试。
+    from app.market_time import cn_today as _cn_today_reason
+    reason_day = _cn_today_reason()
+    if repo.latest_daily_date() and repo.latest_daily_date() < reason_day:
+        # 日K尚未到今天 (非交易日管道/盘前触发): 拉接口最新有数据日, 避免空跑
+        reason_day = None
+    try:
+        emit("sync_uplimit_reason", 94, "拉取涨停原因…")
+        import asyncio as _asyncio_reason
+
+        from app.services.ext_uplimit_reason import sync_uplimit_reason
+
+        async def _reason_task():
+            return await sync_uplimit_reason(repo.store.data_dir, day=reason_day)
+
+        try:
+            _reason_loop = _asyncio_reason.get_running_loop()
+        except RuntimeError:
+            _reason_loop = None
+        if _reason_loop is not None:
+            # 事件循环内 (调度路径): 同步 def 不能 await, 在既有 loop 上 run_until_complete;
+            # 若 loop 正运行会抛 RuntimeError, 由下方软失败机制兜底 (不阻断主管道)。
+            reason_rows = _reason_loop.run_until_complete(_reason_task())
+        else:
+            # 线程池同步路径 (run_now): 无运行中事件循环
+            reason_rows = _asyncio_reason.run(_reason_task())
+        if reason_rows:
+            logger.info("sync_uplimit_reason: %d stocks", reason_rows)
+        emit("sync_uplimit_reason", 94, f"涨停原因 {reason_rows} 只")
+    except Exception as e:
+        logger.warning("sync_uplimit_reason failed (soft): %s", e)
+        stage_errors.append(f"sync_uplimit_reason: {e}")
+        skipped.append("uplimit_reason")
+
     # Step 2.8: 模拟盘结算: 顺延单按当日开盘/收盘撮合 → 除权调整 → 定版净值。
     # 幂等: 重跑同日不会重复成交/二次除权 (订单状态与 corp_action 台账守卫)。
     # 必须在日K/除权同步之后, 才能读到当日 raw OHLC 与因子。核心账务不受

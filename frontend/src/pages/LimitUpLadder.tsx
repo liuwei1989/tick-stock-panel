@@ -46,6 +46,8 @@ interface BrokenFailedConfig {
 interface ExtFieldConfig {
   concept?: ExtFieldItem
   industry?: ExtFieldItem
+  /** 涨停原因 (ext_uplimit_reason.涨停原因) — 长文本, 不参与维度跳转 */
+  reason?: ExtFieldItem
   /** 炸板/断板过滤配置 */
   bf?: BrokenFailedConfig
   /** 显示概念分布统计 */
@@ -69,12 +71,22 @@ const DEFAULT_BF: BrokenFailedConfig = {
 
 function loadExtFields(): ExtFieldConfig {
   const raw = storage.limitLadderExtFields.get({}) as any
-  if (!raw) return {}
+  // 涨停原因默认开启: 未配置过 (或老配置无 reason 键) 时选内置表文本模式。
+  // 用户显式配置过 (reason 键存在, 含清空) 则尊重用户选择。
+  const defaultReason: ExtFieldItem = {
+    field: 'ext_uplimit_reason.涨停原因',
+    display: { displayMode: 'text', maxTags: 0 },
+  }
+  if (!raw || typeof raw !== 'object' || !('reason' in raw)) {
+    const base = raw && typeof raw === 'object' ? raw : {}
+    return { ...base, reason: defaultReason }
+  }
   // 兼容旧格式 { concept: "id.field", conceptSep: "x" }
   if (typeof raw.concept === 'string') {
     return {
       concept: raw.concept ? { field: raw.concept, display: { displayMode: 'tag', separator: raw.conceptSep } } : undefined,
       industry: raw.industry ? { field: raw.industry, display: { displayMode: 'tag', separator: raw.industrySep } } : undefined,
+      reason: raw.reason,
     }
   }
   return raw
@@ -85,13 +97,14 @@ function resolveExtFields(fields: ExtFieldConfig, showConcept: boolean, showIndu
   return {
     concept: showConcept ? fields.concept : undefined,
     industry: showIndustry ? fields.industry : undefined,
+    reason: fields.reason,
     showConceptGroupStats: fields.showConceptGroupStats,
     showIndustryGroupStats: fields.showIndustryGroupStats,
   }
 }
 
 function buildExtColumnsParam(fields: ExtFieldConfig): string | undefined {
-  const parts = [fields.concept?.field, fields.industry?.field].filter(Boolean)
+  const parts = [fields.concept?.field, fields.industry?.field, fields.reason?.field].filter(Boolean)
   return parts.length > 0 ? parts.join(',') : undefined
 }
 
@@ -248,6 +261,14 @@ const StockCard = React.memo(function StockCard({ stock, extFields, direction, s
   const isTextIndustry = extFields.industry?.display?.displayMode === 'text'
   const conceptLayout = extFields.concept?.display?.tagLayout ?? 'horizontal'
   const industryLayout = extFields.industry?.display?.tagLayout ?? 'horizontal'
+  // 涨停原因: 长文本, 独立成行 (仅文本模式, 不参与维度跳转/统计)
+  const reasonText = (() => {
+    const v = extFields.reason?.field
+      ? (stock as unknown as Record<string, unknown>)[extFields.reason.field.replace('.', '__')]
+      : undefined
+    const s = v == null ? '' : String(v).trim()
+    return s || null
+  })()
 
   // 连板数: 按 direction 选字段
   const consecNum = direction === 'down' ? stock.consecutive_limit_downs : stock.consecutive_limit_ups
@@ -259,7 +280,7 @@ const StockCard = React.memo(function StockCard({ stock, extFields, direction, s
   const industryCls = 'text-[10px] leading-none px-1.5 py-0.5 rounded-sm text-sky-800 bg-sky-100/80 dark:text-sky-300/90 dark:bg-sky-400/10'
   const textCls = `${tagCls} text-secondary bg-elevated/60 dark:text-secondary/60`
 
-  const hasTags = conceptTags.length > 0 || industryTags.length > 0
+  const hasTags = conceptTags.length > 0 || industryTags.length > 0 || !!reasonText
 
   // 齿轮始终可见: 让免费用户也能看到功能入口, 点开后在菜单内提示权限不足。
   // 有五档盘口能力的用户正常设置; 无能力时保存按钮禁用 + 显示能力提示。
@@ -385,6 +406,12 @@ const StockCard = React.memo(function StockCard({ stock, extFields, direction, s
                 </button>
               ))}
             </div>
+          )}
+          {reasonText && (
+            /* 涨停原因: 纯文本展示 (不可点击, 长文本最多 3 行截断, 悬浮看全文) */
+            <span className={`${textCls} block w-full leading-snug line-clamp-3`} title={reasonText}>
+              {reasonText}
+            </span>
           )}
         </div>
       )}
@@ -1417,6 +1444,20 @@ function ExtConfigDialog({ fields, onSave, onClose }: {
         <div className="flex items-center justify-between px-4 pt-3 pb-1">
           <span className="text-sm font-medium">配置</span>
           <button onClick={onClose} className="p-0.5 text-muted hover:text-foreground"><X className="h-4 w-4" /></button>
+        </div>
+        {/* 涨停原因 (长文本, 仅选字段) */}
+        <div className="px-2 border-b border-border overflow-hidden">
+          <div className="p-3 flex items-center gap-3">
+            <span className="text-[10px] font-semibold text-rose-400 uppercase tracking-wider shrink-0">涨停原因</span>
+            <div className="flex-1 min-w-0 max-w-[360px]">
+              <FieldSelect
+                value={draft.reason?.field ?? ''}
+                onChange={v => setDraft(d => ({ ...d, reason: v ? { field: v, display: { displayMode: 'text' } } : undefined }))}
+                options={options}
+              />
+            </div>
+            <span className="text-[10px] text-muted shrink-0">卡片底部文本展示，不做题材跳转</span>
+          </div>
         </div>
         {/* 三列平铺 */}
         <div className="flex gap-0 border-b border-border px-2 overflow-hidden">

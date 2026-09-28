@@ -622,6 +622,11 @@ class KlineRepository:
                 df_hist = guarded_collect(lf.select(read_cols), priority="background")
                 logger.info("enriched refresh step done: collect history rows=%d (%.2fs)", len(df_hist), time.perf_counter() - step)
                 if not df_hist.is_empty():
+                    # 信号列 (涨跌停/连板) 依赖 instruments 维表, 缓存构建时确保已刷新,
+                    # 否则调用顺序不同 (先 get_enriched_range 后 get_instruments) 会
+                    # 得到全空信号列, 导致 regime/mainline 等聚合全 0。
+                    if self._instruments_cache is None:
+                        self._refresh_instruments()
                     instruments = self._instruments_cache if self._instruments_cache is not None else pl.DataFrame()
 
                     # 分批计算并关联元数据, 保留完整历史, 限制宽表临时副本。

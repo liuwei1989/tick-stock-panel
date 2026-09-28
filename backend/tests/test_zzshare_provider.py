@@ -42,8 +42,12 @@ def test_get_instruments_normalized(monkeypatch):
     ])
     monkeypatch.setattr("app.services.zzshare_sync._with_retry", lambda fn, *a, **k: raw)
     df = ZzshareProvider().get_instruments("stock")
-    assert df.shape == (3, 6)
-    assert df.columns == ["symbol", "name", "code", "exchange", "asset_type", "source"]
+    # 增强 schema: 原 6 列 + listing_date/float_shares/limit_up/limit_down/as_of
+    assert df.shape == (3, 11)
+    assert df.columns == ["symbol", "name", "code", "exchange", "asset_type",
+                          "source", "listing_date", "float_shares", "limit_up",
+                          "limit_down", "as_of"]
+    assert df["listing_date"].to_list() == [None, None, None]
     # sort by symbol: 000001(SZ) < 600000(SH) < 830799(BJ)
     assert df["exchange"].to_list() == ["SZ", "SH", "BJ"]
     assert df["source"].to_list() == ["zzshare"] * 3

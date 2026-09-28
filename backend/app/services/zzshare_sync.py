@@ -43,12 +43,81 @@ def _emit(progress: Progress | None, message: str) -> None:
 
 
 _token_idx = 0
+_TOKEN_CFG_DIR = "config"
+_TOKEN_CFG_FILE = "zzshare.json"
+
+
+def _token_config_path() -> Path | None:
+    try:
+        d = _default_data_dir()
+    except Exception:  # noqa: BLE001
+        d = None
+    return (d / _TOKEN_CFG_DIR / _TOKEN_CFG_FILE) if d else None
 
 
 def _tokens() -> list[str]:
+    """token 池, 优先级: 本地配置 (data/config/zzshare.json) > 环境变量 ZZSHARE_TOKENS。
+
+    每次读取实时生效 — 后台更新配置后无需重启进程, 下次请求即用新 token。
+    """
+    import json
     import os
 
+    cfg = _token_config_path()
+    if cfg and cfg.exists():
+        try:
+            data = json.loads(cfg.read_text(encoding="utf-8"))
+            tokens = [t.strip() for t in data.get("tokens") or [] if isinstance(t, str) and t.strip()]
+            if tokens:
+                return tokens
+        except Exception:  # noqa: BLE001 配置损坏时回退环境变量
+            logger.warning("zzshare token 配置解析失败, 回退环境变量: %s", cfg)
     return [t.strip() for t in os.getenv("ZZSHARE_TOKENS", "").split(",") if t.strip()]
+
+
+def get_tokens() -> list[str]:
+    """当前生效 token 池 (供管理 API 读取)。"""
+    return _tokens()
+
+
+def set_tokens(tokens: list[str]) -> int:
+    """后台配置 token 池: 写入 data/config/zzshare.json, 热生效 (下次请求即用)。"""
+    import json
+
+    cleaned = [t.strip() for t in tokens if isinstance(t, str) and t.strip()]
+    if not cleaned:
+        raise ValueError("tokens 不能为空")
+    cfg = _token_config_path()
+    if cfg is None:
+        raise RuntimeError("无法定位 data/config 目录")
+    cfg.parent.mkdir(parents=True, exist_ok=True)
+    cfg.write_text(json.dumps({"tokens": cleaned}, ensure_ascii=False, indent=2),
+                   encoding="utf-8")
+    logger.info("zzshare token 池已更新为 %d 个 token", len(cleaned))
+    return len(cleaned)
+
+
+def ensure_tokens_config() -> None:
+    """首次使用时把环境变量 token 固化到本地配置, 使 token 真正"可后台配置"。"""
+    import os
+
+    if _tokens_from_config():
+        return
+    env_tokens = [t.strip() for t in os.getenv("ZZSHARE_TOKENS", "").split(",") if t.strip()]
+    if env_tokens:
+        set_tokens(env_tokens)
+
+
+def _tokens_from_config() -> list[str]:
+    cfg = _token_config_path()
+    if not cfg or not cfg.exists():
+        return []
+    try:
+        import json
+        data = json.loads(cfg.read_text(encoding="utf-8"))
+        return [t.strip() for t in data.get("tokens") or [] if t.strip()]
+    except Exception:  # noqa: BLE001
+        return []
 
 
 def _client() -> "DataApi":
@@ -56,11 +125,32 @@ def _client() -> "DataApi":
 
     global _token_idx
     tokens = _tokens()
+    client = DataApi(token=(tokens[_token_idx % len(tokens)] if tokens else ""), timeout=20)
     if tokens:
-        token = tokens[_token_idx % len(tokens)]
         _token_idx += 1  # 轮询, 多 token 分摊限流
-        return DataApi(token=token, timeout=20)
-    return DataApi(timeout=20)
+    # 429 由外层 _with_retry 统一换 token 重试; 内部同 token 长睡重试只拖慢
+    _disable_internal_retry(client)
+    return client
+
+
+def _disable_internal_retry(client: "DataApi") -> None:
+    """替换 client 内部 _request_with_retry: 429/网络错误直接抛异常, 不做长睡重试。
+
+    外层 _with_retry 负责换 token + 短退避, 多 token 时 429 立刻换 token 重试,
+    避免同 token 反复 sleep Retry-After (15~52s) 导致同步蜗牛化。
+    """
+    import requests
+
+    def _no_long_retry(url: str, params: dict | None = None, max_retries: int = 3):
+        res = requests.get(url, params=params, headers=client.headers, timeout=client.timeout)
+        if res.status_code == 429:
+            raise RuntimeError("zzshare 429 rate limited (Retry-After=%s)"
+                               % res.headers.get("Retry-After"))
+        if res.status_code >= 400:
+            raise RuntimeError("zzshare http %s: %s" % (res.status_code, res.text[:200]))
+        return res
+
+    client._request_with_retry = _no_long_retry  # type: ignore[assignment]
 
 
 def _with_retry(action: Callable[[], object], label: str, attempts: int = 3) -> object:
@@ -189,6 +279,207 @@ def _existing_daily_dates(data_dir: Path) -> set[str]:
     return dates
 
 
+def _resolve_minute_pool(data_dir: Path, pool: str) -> list[str]:
+    """分钟回填股票池: limitup=最新交易日涨停/连板股; all=最新交易日全市场。"""
+    enriched_dir = data_dir / "kline_daily_enriched"
+    dates = sorted(part.parent.name.replace("date=", "") for part in enriched_dir.glob("date=*/part.parquet"))
+    if not dates:
+        return []
+    latest = dates[-1]
+    df = pl.read_parquet(enriched_dir / f"date={latest}" / "part.parquet")
+    syms = df["symbol"].cast(pl.Utf8).unique().to_list()
+    if pool == "limitup":
+        if "consecutive_limit_ups" not in df.columns:
+            return sorted(syms)[:500]
+        up = df.filter(pl.col("consecutive_limit_ups").fill_null(0) >= 1)
+        if up.is_empty():
+            return sorted(syms)[:500]
+        return sorted(up["symbol"].cast(pl.Utf8).unique().to_list())
+    return sorted(syms)
+
+
+def sync_minute(
+    days: int = 10,
+    *,
+    data_dir: Path | None = None,
+    pool: str = "limitup",
+    symbols: list[str] | None = None,
+    freq: str = "1m",
+    workers: int = 4,
+    progress: Progress | None = None,
+) -> dict:
+    """回填最近 N 个交易日 × 股票池的分钟 K → kline_minute (zzshare 数据源)。
+
+    zzshare stk_mins 为「单股×区间」粒度, 全市场×全历史不可行; 因此按
+    「交易日 × 池」拉取: 默认池 = 最新交易日涨停/连板股 (短线能力直接相关),
+    可传 --symbols 显式覆盖。落盘复用 _write_minute_partition (按 date= 分区,
+    与 kline_sync 分钟存储同 schema: symbol/datetime/open/high/low/close/volume/amount)。
+    """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from app.services.kline_sync import _write_minute_partition
+
+    d = Path(data_dir) if data_dir else _default_data_dir()
+    minute_dir = d / "kline_minute"
+    minute_dir.mkdir(parents=True, exist_ok=True)
+
+    # 交易日: zzshare 日历, 取最近 N 个
+    from datetime import datetime as _dt
+    trade_days = list_trade_days(days)
+    if not trade_days:
+        raise RuntimeError("zzshare 交易日历为空, 无法同步分钟")
+    _emit(progress, f"分钟回填交易日 {len(trade_days)} 天 ({trade_days[0]}~{trade_days[-1]})")
+
+    # 股票池
+    syms = list(symbols) if symbols else _resolve_minute_pool(d, pool)
+    if not syms:
+        raise RuntimeError("分钟股票池为空 (enriched 无数据; 可用 --symbols 指定)")
+    _emit(progress, f"分钟股票池 {len(syms)} 只 (pool={pool})")
+
+    # ts_code 后缀: instruments 维表 exchange → 交易所代码
+    inst = pl.read_parquet(d / "instruments" / "instruments.parquet").select(
+        pl.col("symbol").cast(pl.Utf8), "exchange",
+    ).unique(subset=["symbol"])
+    ex_map = {"SH": "SH", "SZ": "SZ", "BJ": "BJ"}
+    suffix = {
+        str(r["symbol"]): f"{r['symbol']}.{ex_map.get(str(r['exchange']).upper(), 'SH')}"
+        for r in inst.to_dicts()
+    }
+
+    client = _client()
+    rows_written = 0
+    days_done = 0
+
+    def _fetch_day(sym: str, trade_date: str) -> pl.DataFrame:
+        ts_code = suffix.get(sym, sym)
+        raw = _with_retry(
+            lambda: client.stk_mins(ts_code=ts_code, trade_time=trade_date, freq=freq),
+            f"{sym} {trade_date} 分钟",
+        )
+        import pandas as pd
+        if raw is None or (isinstance(raw, pd.DataFrame) and raw.empty):
+            return pl.DataFrame()
+        df = pl.from_pandas(pd.DataFrame(raw), include_index=False)
+        if df.is_empty():
+            return df
+        df = df.rename({k: v for k, v in {
+            "ts_code": "symbol", "vol": "volume", "amt": "amount",
+        }.items() if k in df.columns})
+        df = df.with_columns(pl.col("symbol").cast(pl.Utf8).map_elements(
+            lambda v: str(v).split(".")[0].zfill(6), return_dtype=pl.Utf8,
+        ))
+        if "trade_time" in df.columns:
+            df = df.with_columns(
+                pl.col("trade_time").cast(pl.Utf8).str.strptime(
+                    pl.Datetime("us"), "%Y%m%d%H%M"
+                ).alias("datetime"),
+            ).drop("trade_time")
+        for col in ("open", "high", "low", "close", "volume", "amount"):
+            if col in df.columns:
+                df = df.with_columns(pl.col(col).cast(pl.Float64, strict=False))
+        keep = [c for c in ("symbol", "datetime", "open", "high", "low", "close", "volume", "amount")
+                if c in df.columns]
+        return df.select(keep)
+
+    for trade_date in trade_days:
+        parts: list[pl.DataFrame] = []
+        done = 0
+        with ThreadPoolExecutor(max_workers=workers) as pool_exec:
+            futures = {pool_exec.submit(_fetch_day, sym, trade_date): sym for sym in syms}
+            for fut in as_completed(futures):
+                done += 1
+                df = fut.result()
+                if not df.is_empty():
+                    parts.append(df)
+                if done % 50 == 0:
+                    _emit(progress, f"[{trade_date}] {done}/{len(syms)}")
+        if parts:
+            day_df = pl.concat(parts)
+            n = _write_minute_partition(day_df, minute_dir)
+            rows_written += n
+        days_done += 1
+        _emit(progress, f"[{trade_date}] 完成 ({done} 只, 写入 {rows_written} 行累计)")
+
+    return {"days": days_done, "pool_size": len(syms), "rows_written": rows_written}
+
+
+def sync_instruments(
+    data_dir: Path | None = None,
+    *,
+    progress: Progress | None = None,
+) -> int:
+    """同步全市场股票维表 → data/instruments/instruments.parquet (zzshare 数据源)。
+
+    基础字段 (symbol/name/exchange) 来自 zzshare stock_basic; listing_date 该接口
+    返回空串, 用本地 kline_daily 每只股票的最早日期推断 (数据窗口内近似, 用于
+    注册制新股无涨跌幅窗口判定; 老股不受影响)。float_shares/limit_up/limit_down
+    zzshare 未提供 → None, 上层走理论价/规则退化路径。
+
+    写入列与 tickflow 版本维表兼容 (instrument_sync._flatten_instruments 同 schema)。
+    返回写入行数。
+    """
+    from app.data_providers.zzshare_provider import ZzshareProvider
+    from app.tickflow.repository import KlineRepository
+    from app.services.fs_utils import atomic_write_parquet
+
+    d = Path(data_dir) if data_dir else _default_data_dir()
+    repo = KlineRepository(_store(d))
+    df = ZzshareProvider().get_instruments("stock")
+    if df.is_empty():
+        raise RuntimeError("zzshare 股票列表为空, 无法同步 instruments")
+    _emit(progress, f"zzshare stock_basic: {df.height} 只")
+
+    # listing_date 兜底: 本地 kline_daily 最早日期 (数据窗口内近似上市日期)
+    if df["listing_date"].null_count() == df.height:
+        daily_dir = d / "kline_daily"
+        parts = list(daily_dir.glob("date=*/part.parquet"))
+        if parts:
+            first = pl.scan_parquet(sorted(parts)[0])
+            try:
+                earliest = (
+                    first.select(["symbol", "date"])
+                    .group_by("symbol").agg(pl.col("date").min().alias("listing_date"))
+                    .collect()
+                )
+                df = df.drop("listing_date").join(
+                    earliest.with_columns(pl.col("symbol").str.to_uppercase()),
+                    on="symbol", how="left",
+                )
+                _emit(progress, f"listing_date 由本地日线推断: {earliest.height} 只")
+            except Exception as e:  # noqa: BLE001
+                logger.warning("listing_date 推断失败: %s", e)
+    elif df["listing_date"].null_count() > 0:
+        daily_dir = d / "kline_daily"
+        parts = list(daily_dir.glob("date=*/part.parquet"))
+        if parts:
+            first = pl.scan_parquet(sorted(parts)[0])
+            try:
+                earliest = (
+                    first.select(["symbol", "date"])
+                    .group_by("symbol").agg(pl.col("date").min().alias("listing_date"))
+                    .collect()
+                )
+                missing = df.filter(pl.col("listing_date").is_null()).select("symbol")
+                joined = missing.join(
+                    earliest.with_columns(pl.col("symbol").str.to_uppercase()),
+                    on="symbol", how="left",
+                )
+                fill_map = dict(zip(joined["symbol"].to_list(), joined["listing_date"].to_list(), strict=False))
+                df = df.with_columns(
+                    pl.when(pl.col("symbol").is_in(list(fill_map.keys())))
+                    .then(pl.col("symbol").map_elements(lambda s: fill_map.get(s), return_dtype=pl.Date))
+                    .otherwise(pl.col("listing_date"))
+                    .alias("listing_date")
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning("listing_date 局部推断失败: %s", e)
+
+    out = d / "instruments" / "instruments.parquet"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    atomic_write_parquet(df.sort("symbol"), out)
+    _emit(progress, f"instruments 写入: {df.height} 行 → {out}")
+    return df.height
+
+
 def sync_daily(
     days: int = 260,
     *,
@@ -287,6 +578,12 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=4, help="并发拉取 worker 数")
     parser.add_argument("--data-dir", type=str, default=None, help="数据目录 (默认 settings.data_dir)")
     parser.add_argument("--force", action="store_true", help="强制重拉已存在日期")
+    parser.add_argument("--minute-days", type=int, default=0,
+                        help=">0 时执行分钟回填: 最近 N 个交易日")
+    parser.add_argument("--minute-pool", type=str, default="limitup",
+                        help="分钟股票池: limitup(最新涨停/连板股) | all(全市场)")
+    parser.add_argument("--minute-symbols", type=str, default="",
+                        help="分钟股票池显式覆盖: 逗号分隔 6 位代码")
     args = parser.parse_args()
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -297,6 +594,11 @@ def main() -> None:
     result = sync_daily(args.days, data_dir=Path(args.data_dir) if args.data_dir else None,
                         progress=_progress, force_refresh=args.force, workers=args.workers)
     print(json.dumps(result, ensure_ascii=False, indent=2))
+    if args.minute_days > 0:
+        symbols = [x.strip() for x in args.minute_symbols.split(",") if x.strip()] if args.minute_symbols else None
+        mresult = sync_minute(args.minute_days, data_dir=Path(args.data_dir) if args.data_dir else None,
+                              pool=args.minute_pool, symbols=symbols, progress=_progress)
+        print(json.dumps({"minute": mresult}, ensure_ascii=False, indent=2))
 
 
 if __name__ == "__main__":

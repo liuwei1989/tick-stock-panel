@@ -30,12 +30,15 @@ _MIN_STREAK_UP = 2          # 主升需连续上榜天数
 # ───────────────────────── 数据健康 ─────────────────────────
 
 def _partition_stats(path: Path) -> dict:
-    """某目录下的 date= 分区统计。"""
+    """某目录下的 date= 分区统计; 平铺 part.parquet (regime/mainline) 记为 1 份。"""
     if not path.exists():
         return {"exists": False, "partitions": 0, "latest": None}
     dates = sorted(d.name.split("=", 1)[1] for d in path.glob("date=*"))
-    return {"exists": True, "partitions": len(dates),
-            "latest": dates[-1] if dates else None}
+    if dates:
+        return {"exists": True, "partitions": len(dates), "latest": dates[-1]}
+    if (path / "part.parquet").exists():
+        return {"exists": True, "partitions": 1, "latest": "part.parquet"}
+    return {"exists": True, "partitions": 0, "latest": None}
 
 
 def data_health(data_dir: Path) -> dict:
@@ -50,6 +53,10 @@ def data_health(data_dir: Path) -> dict:
         ("mainline_history", "主线时序", base / "mainline_history"),
         ("plans", "盘前计划", base / "plans"),
         ("reviews", "复盘记录", base / "reviews"),
+        ("topic_rank", "题材热度", base / "topic_rank"),
+        ("uplimit", "涨停复盘", base / "uplimit"),
+        ("lhb", "龙虎榜", base / "lhb"),
+        ("sentiment", "情绪K线", base / "sentiment"),
     ]
     for key, label, path in specs:
         if path.is_dir():
@@ -184,11 +191,12 @@ def _alerts(health: dict, mainline: dict, regime: dict, wf_overview: dict) -> li
 
 
 def cockpit_overview(data_dir: Path) -> dict:
-    """驾驶舱总览: 环境 + 数据健康 + 主线认证 + 工作流 + 提醒。"""
+    """驾驶舱总览: 环境 + 数据健康 + 主线认证 + 工作流 + 提醒 + zzshare 扩展。"""
     health = data_health(data_dir)
     mainline = mainline_certification(data_dir)
     regime = _regime_summary(data_dir)
     wf_overview = _safe_wf_overview(data_dir)
+    zz = _zzshare_summary(data_dir)
     alerts = _alerts(health, mainline, regime, wf_overview)
     return {
         "as_of": date.today().isoformat(),
@@ -196,9 +204,21 @@ def cockpit_overview(data_dir: Path) -> dict:
         "mainline": mainline,
         "regime": regime,
         "workflow": wf_overview,
+        "zzshare": zz,
         "alerts": alerts,
         "status": ("ok" if not any(a["level"] == "error" for a in alerts)
                    else "attention"),
+    }
+
+
+def _zzshare_summary(data_dir: Path) -> dict:
+    """zzshare 扩展数据摘要 (题材/涨停/龙虎榜/情绪), 数据缺失时降级 available=false。"""
+    from app.services import zzshare_extra
+    return {
+        "topics": zzshare_extra.topics_summary(data_dir),
+        "uplimit": zzshare_extra.uplimit_summary(data_dir),
+        "lhb": zzshare_extra.lhb_summary(data_dir),
+        "sentiment": zzshare_extra.sentiment_summary(data_dir),
     }
 
 

@@ -136,6 +136,10 @@ export default function Evolution() {
       validate_days: validateDays,
       walk_forward_windows: windows,
       max_candidates: candidates,
+      min_validation_trades: 8,
+      min_positive_windows: 3,
+      min_positive_window_ratio: 0.5,
+      min_stability_score: 0.5,
       max_positions: maxPositions,
       holding_days: holdingDays,
       iterative_seeds: iterative,
@@ -143,7 +147,7 @@ export default function Evolution() {
     onSuccess: (r) => {
       if (!r.run_id) { toast('进化未产出结果 (见日志)', 'error'); return }
       setLastRun(r)
-      toast(`进化完成: ${r.status === 'recommended' ? '有推荐候选' : '无改进'}`, r.status === 'recommended' ? 'success' : 'info')
+      toast(`进化完成: ${r.status === 'recommended' ? '有推荐候选' : '无改进'}`, r.status === 'recommended' ? 'success' : 'error')
       qc.invalidateQueries({ queryKey: QK.evolutionRecommendations })
     },
     onError: (e: Error) => toast(e.message || '进化失败', 'error'),

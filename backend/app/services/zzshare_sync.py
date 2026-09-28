@@ -42,12 +42,24 @@ def _emit(progress: Progress | None, message: str) -> None:
     logger.info("zzshare_sync: %s", message)
 
 
+_token_idx = 0
+
+
+def _tokens() -> list[str]:
+    import os
+
+    return [t.strip() for t in os.getenv("ZZSHARE_TOKENS", "").split(",") if t.strip()]
+
+
 def _client() -> "DataApi":
     from zzshare.client import DataApi
 
-    tokens = [t.strip() for t in __import__("os").getenv("ZZSHARE_TOKENS", "").split(",") if t.strip()]
+    global _token_idx
+    tokens = _tokens()
     if tokens:
-        return DataApi(token=tokens[0], timeout=20)
+        token = tokens[_token_idx % len(tokens)]
+        _token_idx += 1  # 轮询, 多 token 分摊限流
+        return DataApi(token=token, timeout=20)
     return DataApi(timeout=20)
 
 
@@ -184,11 +196,17 @@ def sync_daily(
     repo: KlineRepository | None = None,
     progress: Progress | None = None,
     force_refresh: bool = False,
+    workers: int = 4,
 ) -> dict:
     """同步最近 N 个交易日全市场日线 + 除权因子, 并触发 enriched 全量计算。
 
+    并发策略: 按交易日分片并发拉取 (zzshare 单请求 ~20s 且连接不稳定,
+    多 worker + token 轮询显著提速); 除权因子统一合并写入, 避免并发写冲突。
+
     返回统计: {days_checked, days_fetched, rows, factor_events, enriched_rows}。
     """
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     d = Path(data_dir) if data_dir else _default_data_dir()
     repo = repo or KlineRepository(_store(d))
     trade_days = list_trade_days(days)
@@ -198,25 +216,39 @@ def sync_daily(
 
     existing = set() if force_refresh else _existing_daily_dates(d)
     todo = [d for d in trade_days if d not in existing]
-    _emit(progress, f"待拉取 {len(todo)} 天 (已有 {len(trade_days) - len(todo)} 天跳过)")
+    _emit(progress, f"待拉取 {len(todo)} 天 (已有 {len(trade_days) - len(todo)} 天跳过, workers={workers})")
 
     fetched_days = 0
     rows = 0
-    factors_total = 0
-    for idx, trade_date in enumerate(todo, start=1):
+    factors_all: list[pl.DataFrame] = []
+
+    def _sync_one(trade_date: str) -> tuple[str, int, pl.DataFrame]:
         df = fetch_daily(trade_date)
         if df.is_empty():
-            _emit(progress, f"[{idx}/{len(todo)}] {trade_date} 无数据, 跳过")
-            continue
+            return trade_date, 0, pl.DataFrame()
         repo.append_daily(df)
         factors = build_ex_factors(df)
-        if not factors.is_empty():
-            factors_total += save_adj_factor(d, factors)
-        rows += len(df)
-        fetched_days += 1
-        _emit(progress, f"[{idx}/{len(todo)}] {trade_date} 写入 {len(df)} 行, 因子 {len(factors)} 个")
-        time.sleep(0.3)  # 限速退避
+        return trade_date, len(df), factors
 
+    done = 0
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        futures = {pool.submit(_sync_one, td): td for td in todo}
+        for future in as_completed(futures):
+            td, n, factors = future.result()
+            done += 1
+            if n == 0:
+                _emit(progress, f"[{done}/{len(todo)}] {td} 无数据, 跳过")
+                continue
+            fetched_days += 1
+            rows += n
+            if not factors.is_empty():
+                factors_all.append(factors)
+            _emit(progress, f"[{done}/{len(todo)}] {td} 写入 {n} 行, 因子 {len(factors)} 个")
+
+    factors_total = 0
+    if factors_all:
+        merged = pl.concat(factors_all)
+        factors_total = save_adj_factor(d, merged)
     _emit(progress, f"日线同步完成: {fetched_days} 天 / {rows} 行, 除权因子 {factors_total} 个")
 
     # enriched 全量计算 (官方路径: 读 kline_daily + adj_factor → 前复权 + 指标)
@@ -252,6 +284,7 @@ def main() -> None:
 
     parser = argparse.ArgumentParser(description="zzshare 数据源同步 (补充 TSP 缺失日线)")
     parser.add_argument("--days", type=int, default=260, help="拉取最近 N 个交易日")
+    parser.add_argument("--workers", type=int, default=4, help="并发拉取 worker 数")
     parser.add_argument("--data-dir", type=str, default=None, help="数据目录 (默认 settings.data_dir)")
     parser.add_argument("--force", action="store_true", help="强制重拉已存在日期")
     args = parser.parse_args()
@@ -262,7 +295,7 @@ def main() -> None:
         print(f"[sync] {message}", flush=True)
 
     result = sync_daily(args.days, data_dir=Path(args.data_dir) if args.data_dir else None,
-                        progress=_progress, force_refresh=args.force)
+                        progress=_progress, force_refresh=args.force, workers=args.workers)
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

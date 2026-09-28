@@ -2398,6 +2398,55 @@ export interface WorkflowOverview {
   feedback_count: number
 }
 
+// ===== 驾驶舱 (Cockpit) =====
+export interface CockpitHealthLayer {
+  key: string
+  label: string
+  exists: boolean
+  partitions: number
+  latest: string | null
+}
+export interface CockpitMainlineItem {
+  member: string
+  latest_date: string
+  score: number
+  rank: number
+  streak_days: number
+  avg5_score: number
+  limit_up_count: number
+  max_boards: number
+  leader_symbol: string | null
+  level: 'gold' | 'up' | 'pulse' | 'rotate'
+}
+export interface CockpitOverview {
+  as_of: string
+  status: 'ok' | 'attention'
+  health: {
+    layers: CockpitHealthLayer[]
+    enriched_behind_daily: boolean
+  }
+  mainline: {
+    available: boolean
+    detail?: string
+    as_of?: string
+    items?: CockpitMainlineItem[]
+    leaders?: { member: string; symbol: string | null; level: string; streak_days: number; score: number; max_boards: number }[]
+    gold_count?: number
+  }
+  regime: {
+    available: boolean
+    detail?: string
+    date?: string
+    score?: number
+    state?: string
+    state_label?: string
+    phase?: string
+    phase_label?: string
+  }
+  workflow: WorkflowOverview
+  alerts: { level: 'error' | 'warn' | 'info'; title: string; detail: string }[]
+}
+
 // ===== API surface =====
 export const api = {
   health: () => request<{ status: string; version: string; mode: string }>('/health'),
@@ -2473,6 +2522,7 @@ export const api = {
   dataSources: () => request<DataSourcesResponse>('/api/settings/data-sources'),
   capabilityMatrix: () => request<CapabilityMatrix>('/api/settings/capability-matrix'),
   workflowOverview: () => request<WorkflowOverview>('/api/workflow/overview'),
+  cockpitOverview: () => request<CockpitOverview>('/api/cockpit/overview'),
   evolutionRun: (body: EvolutionRunConfig) =>
     request<EvolutionRecord & { progress?: string[] }>('/api/evolution/run', {
       method: 'POST',

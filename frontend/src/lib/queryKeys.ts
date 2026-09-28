@@ -112,6 +112,7 @@ export const QK = {
   evolutionRecommendations: ['evolution', 'recommendations'] as const,
   evolutionApplied:         ['evolution', 'applied'] as const,
   evolutionEnvGate:         ['evolution', 'env-gate'] as const,
+  cockpitOverview:       ['cockpit', 'overview'] as const,
   workflowOverview:     ['workflow', 'overview'] as const,
   workflowPlans:        (date?: string) => ['workflow', 'plans', date ?? 'all'] as const,
   workflowPlan:         (planId: string) => ['workflow', 'plan', planId] as const,

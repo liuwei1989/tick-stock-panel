@@ -32,6 +32,7 @@ const StockAnalysis = lazy(() => import('./pages/StockAnalysis').then(m => ({ de
 const Signals = lazy(() => import('./pages/Signals').then(m => ({ default: m.Signals })))
 const Review = lazy(() => import('./pages/Review').then(m => ({ default: m.Review })))
 const Workflow = lazy(() => import('./pages/Workflow'))
+const Cockpit = lazy(() => import('./pages/Cockpit'))
 const LimitUpLadder = lazy(() => import('./pages/LimitUpLadder').then(m => ({ default: m.LimitUpLadder })))
 const Indices = lazy(() => import('./pages/Indices').then(m => ({ default: m.Indices })))
 const Branding = lazy(() => import('./pages/Branding').then(m => ({ default: m.Branding })))
@@ -50,6 +51,7 @@ const CORE_ROUTE_PATHS = new Set([
   '/concept-analysis',
   '/industry-analysis',
   '/stock-analysis',
+  '/cockpit',
   '/workflow',
   '/review',
   '/watchlist',
@@ -132,6 +134,7 @@ export const router = createBrowserRouter([
       { path: 'concept-analysis', element: <ConceptAnalysis /> },
       { path: 'industry-analysis', element: <IndustryAnalysis /> },
       { path: 'stock-analysis', element: <StockAnalysis /> },
+      { path: 'cockpit', element: <Cockpit /> },
       { path: 'workflow', element: <Workflow /> },
       { path: 'review', element: <Review /> },
       { path: 'watchlist', element: <Watchlist /> },

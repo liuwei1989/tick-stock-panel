@@ -19,8 +19,9 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from app.services import auction_benchmark, dragon_tiger, market_recap_reports
+from app.services import auction_benchmark, dragon_tiger, market_recap_reports, preferences
 from app.services.market_recap import recap_market_stream
+from app.services.ndjson_heartbeat import with_heartbeat
 
 logger = logging.getLogger(__name__)
 
@@ -100,7 +101,9 @@ async def analyze_market(request: Request, req: AnalyzeRequest):
             raise HTTPException(400, f"as_of 格式应为 YYYY-MM-DD,收到: {req.as_of}")
 
     async def stream_gen():
-        async for chunk in recap_market_stream(repo, quote_service, depth_service, as_of, req.focus):
+        async for chunk in with_heartbeat(
+            recap_market_stream(repo, quote_service, depth_service, as_of, req.focus),
+        ):
             yield chunk + "\n"
 
     return StreamingResponse(
@@ -122,6 +125,7 @@ class SaveReportRequest(BaseModel):
     summary: str = ""
     emotion_score: int | None = None
     emotion_label: str = ""
+    push: bool = False  # 是否显式外发推送(manual 模式下需显式传 true)
 
 
 @router.get("/reports")
@@ -132,7 +136,7 @@ def list_reports(request: Request):
 
 @router.post("/reports")
 def save_report(request: Request, req: SaveReportRequest):
-    """保存一条复盘报告。"""
+    """保存一条复盘报告。req.push=True 或 review_push_mode=auto 时才推送到外部渠道。"""
     report = market_recap_reports.save_report({
         "as_of": req.as_of,
         "focus": req.focus,
@@ -141,13 +145,14 @@ def save_report(request: Request, req: SaveReportRequest):
         "emotion_score": req.emotion_score,
         "emotion_label": req.emotion_label,
     })
-    # 推送到飞书(可选): 与定时复盘共用同一开关 review_push_enabled 与 _maybe_push_review。
+    # 推送门控: manual 模式需显式 push=True; auto 模式保持归档即推。
     # 内部 try/except 静默降级, 不影响归档返回值。
-    from app.jobs.daily_pipeline import _maybe_push_review
-    _maybe_push_review(req.content, {
-        "as_of": req.as_of,
-        "emotion_label": req.emotion_label,
-    })
+    if req.push or preferences.get_review_push_mode() == "auto":
+        from app.jobs.daily_pipeline import _maybe_push_review
+        _maybe_push_review(req.content, {
+            "as_of": req.as_of,
+            "emotion_label": req.emotion_label,
+        })
     return {"ok": True, "report": report}
 
 

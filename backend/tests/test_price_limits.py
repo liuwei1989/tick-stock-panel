@@ -138,14 +138,53 @@ def test_minute_price_limit_prefers_authoritative_prices_only_today(monkeypatch)
         "rate": 0.10,
         "limit_up": 10.88,
         "limit_down": 8.90,
+        "no_limit": False,
         "source": "instrument",
     }
     assert historical == {
         "rate": 0.05,
         "limit_up": None,
         "limit_down": None,
+        "no_limit": False,
         "source": "rule",
     }
+
+
+class _NewStockRepo:
+    """listing_date 在无涨跌幅窗口内的注册制新股维表 (C沈鼓场景)。"""
+
+    def __init__(self, listing: date):
+        self.listing = listing
+
+    def get_instruments_asset(self, asset_type: str) -> pl.DataFrame:
+        assert asset_type == "stock"
+        return pl.DataFrame({
+            "symbol": ["601091.SH"],
+            "name": ["C沈鼓"],
+            "limit_up": [100000.0],   # 哨兵值
+            "limit_down": [None],
+            "listing_date": [self.listing],
+        })
+
+
+def test_minute_price_limit_no_limit_window_overrides_rate_and_sentinel():
+    """listing_date 命中窗口: 历史日 (哨兵/as_of 均失效) 也返回 no_limit=True。"""
+    listing = date(2026, 9, 17)
+    repo = _NewStockRepo(listing)
+
+    # 行情日 = 上市次日 (窗口内), 维表 as_of 与行情日无关 (无 as_of 列)
+    info = kline._get_price_limit_info(repo, "601091.SH", date(2026, 9, 18), "stock", "C沈鼓")
+
+    assert info is not None
+    assert info["no_limit"] is True
+    assert info["limit_up"] is None
+    assert info["limit_down"] is None
+
+    # 窗口外 (第 6 个交易日之后) 恢复 rate 口径
+    after = kline._get_price_limit_info(repo, "601091.SH", date(2026, 10, 15), "stock", "沈鼓能源")
+    assert after is not None
+    assert after["no_limit"] is False
+    assert after["rate"] == 0.10
 
 
 def _daily_limit_rows(current_close: float) -> pl.DataFrame:
@@ -187,6 +226,68 @@ def test_daily_limit_prices_require_matching_instrument_date(instrument_as_of, e
 
     assert result["signal_limit_down"][-1] is expected
     assert "_instrument_as_of" not in result.columns
+
+
+def test_daily_limit_prices_ignore_zero_placeholder_and_match_realtime():
+    """维表涨跌停价为 0 (数据源未提供该字段的占位值) 时必须回退理论价。
+
+    直接采用 0 会让「raw_close >= 0 - 0.005」恒成立, 当日所有标的被判涨停,
+    连板数一路累加; 跌停侧反过来永远判不出跌停。实时路径
+    (_compute_limit_signals_today) 已有 >0 守卫, 冷路径必须同口径。
+    """
+    instruments = pl.DataFrame({
+        "symbol": ["600001.SH"],
+        "name": ["普通股"],
+        "limit_up": [0.0],
+        "limit_down": [0.0],
+        "as_of": [date(2026, 7, 20)],
+    })
+
+    # 只涨 0.5%: 不是涨停
+    mild = pipeline.compute_limit_signals(
+        _daily_limit_rows(10.05),
+        instruments,
+        needed={"signal_limit_up", "consecutive_limit_ups"},
+    )
+    assert mild["signal_limit_up"][-1] is False
+    assert mild["consecutive_limit_ups"][-1] == 0
+
+    # 真涨停 11.00 = 10.00 x 1.1: 理论价兜底后仍须判出
+    sealed = pipeline.compute_limit_signals(
+        _daily_limit_rows(11.00),
+        instruments,
+        needed={"signal_limit_up", "consecutive_limit_ups"},
+    )
+    assert sealed["signal_limit_up"][-1] is True
+    assert sealed["consecutive_limit_ups"][-1] == 1
+
+    # 真跌停 9.00 = 10.00 x 0.9: 占位 0 不得让跌停漏判
+    floored = pipeline.compute_limit_signals(
+        _daily_limit_rows(9.00),
+        instruments,
+        needed={"signal_limit_down"},
+    )
+    assert floored["signal_limit_down"][-1] is True
+
+    # 与实时路径同一份维表同一结论
+    realtime = pipeline._compute_limit_signals_today(
+        pl.DataFrame({
+            "symbol": ["600001.SH"],
+            "date": [date(2026, 7, 20)],
+            "open": [10.05],
+            "high": [10.05],
+            "low": [10.05],
+            "close": [10.05],
+            "raw_close": [10.05],
+            "raw_high": [10.05],
+            "raw_low": [10.05],
+            "_prev_close_raw": [10.0],
+            "volume": [1000.0],
+        }),
+        instruments,
+    )
+    assert realtime["signal_limit_up"][0] is False
+    assert mild["signal_limit_up"][-1] is realtime["signal_limit_up"][0]
 
 
 def test_realtime_limit_prices_ignore_stale_instrument_date():

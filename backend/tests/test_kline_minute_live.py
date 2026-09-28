@@ -15,6 +15,7 @@ from fastapi.testclient import TestClient
 
 from app.api.kline import router
 from app.market_time import CN_TZ, in_continuous_session
+from app.tickflow.capabilities import Cap, CapabilityLimits, CapabilitySet
 
 # 2026-08-26 是周三; 10:00 处于上午连续竞价, expected(已交易分钟) = 30
 _NOW = datetime(2026, 8, 26, 10, 0, tzinfo=CN_TZ)
@@ -23,6 +24,13 @@ _LOCAL_ROWS = 30
 
 
 class _FakeRepo:
+    def __init__(self) -> None:
+        # /minute 读取 repo.store.data_dir 判断分钟基准标记 (无标记即旧行为)
+        import tempfile
+        from types import SimpleNamespace
+        from pathlib import Path
+        self.store = SimpleNamespace(data_dir=Path(tempfile.mkdtemp()))
+
     def resolve_asset_type(self, symbol: str) -> str:
         return "stock"
 
@@ -48,6 +56,9 @@ def _client() -> TestClient:
     app = FastAPI()
     app.include_router(router)
     app.state.repo = _FakeRepo()
+    app.state.capabilities = CapabilitySet({
+        Cap.KLINE_MINUTE_BY_SYMBOL: CapabilityLimits(),
+    })
     return TestClient(app)
 
 
@@ -57,12 +68,14 @@ def _patch_market(monkeypatch, *, in_session: bool) -> None:
     monkeypatch.setattr(kline_api, "cn_now", lambda: _NOW)
     monkeypatch.setattr(kline_api, "cn_today", lambda: _TODAY)
     monkeypatch.setattr(kline_api, "in_continuous_session", lambda: in_session)
+    # 缺省日期路径会问交易日探针; 钉成交易日 (_NOW 是周三), 不打真实行情请求
+    monkeypatch.setattr(kline_api.trading_day, "is_trading_day", lambda now=None: True)
 
 
 def _patch_live_fetch(monkeypatch) -> None:
     import app.api.kline as kline_api
 
-    def _fake_fetch(symbol, trade_date, asset_type="stock"):
+    def _fake_fetch(symbol, trade_date, asset_type="stock", *, capset, raw_basis=False):
         return pl.DataFrame({
             "datetime": [datetime(2026, 8, 26, 9, 59)],
             "close": [11.11],

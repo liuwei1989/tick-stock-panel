@@ -12,11 +12,11 @@ import re
 from dataclasses import asdict
 from datetime import date
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.backtest.minute_trigger import MINUTE_EXIT_TRIGGER_SIGNALS
 from app.strategy import config as strategy_config
@@ -29,6 +29,7 @@ from app.strategy.scoring import (
     effective_scoring,
     effective_scoring_directions,
 )
+from app.services.ndjson_heartbeat import with_heartbeat
 
 router = APIRouter(prefix="/api/strategies", tags=["strategies"])
 logger = logging.getLogger(__name__)
@@ -188,6 +189,7 @@ def _strategy_detail(
         "description": description or s.meta.get("description", ""),
         "tags": s.meta.get("tags", []),
         "source": s.source,
+        "research_only": s.meta.get("research_only", False),
         "execution_backend": s.execution_backend,
         "asset_types": s.meta.get("asset_types", ["stock"]),
         "timeframes": s.meta.get("timeframes", ["1d"]),
@@ -257,6 +259,16 @@ class AIGenerateRequest(BaseModel):
     prompt: str
 
 
+class AIIterateRequest(BaseModel):
+    """AI 迭代请求 — 与 BuildRequest step1 同构, 复用 build_step1 拼 prompt"""
+    name: str = ""
+    description: str = ""
+    direction: str = "long"
+    rules: str = ""
+    execution_backend: Literal["polars_expr", "matrix_native"] = "polars_expr"
+    max_rounds: int = Field(default=4, ge=1, le=10)
+
+
 class AISaveRequest(BaseModel):
     code: str
     strategy_id: str
@@ -307,14 +319,17 @@ def list_strategies(
     request: Request,
     asset_type: str | None = None,
     timeframe: str | None = None,
+    include_research: bool = False,
 ):
     engine = _get_engine(request)
     data_dir = _data_dir(request)
     all_overrides = strategy_config.list_overrides(data_dir)
 
     result = []
-    for meta in engine.list_strategies():
-        if meta.get("research_only"):
+    # include_research=True 时返回 research_only 草稿(供前端「草稿」分区展示/发布)。
+    # 默认 False 保持既有行为: 草稿不进公开列表。
+    for meta in engine.list_strategies(include_research=include_research):
+        if meta.get("research_only") and not include_research:
             continue
         if asset_type and asset_type not in meta.get("asset_types", ["stock"]):
             continue
@@ -533,6 +548,8 @@ class BuildRequest(BaseModel):
     rules: str = ""
     strategy_id: str = ""
     execution_backend: Literal["polars_expr", "matrix_native"] = "polars_expr"
+    # 用户「默认基础参数」(策略页设置): 生成代码的 META.basic_filter 优先采用
+    basic_filter: dict[str, Any] | None = None
     # step2 字段
     current_code: str = ""
     instruction: str = ""
@@ -560,7 +577,11 @@ def _set_meta_string_field(block: str, field: str, value: str) -> str:
     )
     if count:
         return next_block
+    return _insert_meta_field(block, field, _py_string(value))
 
+
+def _insert_meta_field(block: str, field: str, value_repr: str) -> str:
+    """在 META 字典末尾(闭合 `}` 之前)插入一个字段。value_repr 已是 Python 源码。"""
     lines = block.splitlines(keepends=True)
     key_indent = None
     for line in lines:
@@ -585,7 +606,33 @@ def _set_meta_string_field(block: str, field: str, value: str) -> str:
             newline = lines[i][len(body):]
             lines[i] = body.rstrip() + "," + newline
         break
-    lines.insert(insert_at, f'{key_indent}"{field}": {_py_string(value)},\n')
+    lines.insert(insert_at, f'{key_indent}"{field}": {value_repr},\n')
+    return "".join(lines)
+
+
+def _set_meta_bool_field(code: str, field: str, value: bool) -> str:
+    """设置 META 里的布尔字段(纯文本改写, 不执行代码): 存在则替换, 不存在则追加。"""
+    found = find_meta_assignment(code)
+    if found is None:
+        raise ValueError("找不到 META 字典")
+    meta_node = found[1]
+    lines = code.splitlines(keepends=True)
+    start = meta_node.lineno - 1
+    end = meta_node.end_lineno or meta_node.lineno
+    block = "".join(lines[start:end])
+
+    value_repr = "True" if value else "False"
+    key_pattern = re.compile(
+        rf"(?m)^(\s*[\"']{re.escape(field)}[\"']\s*:\s*)(?:True|False|[\"'][^\"'\n]*[\"'])"
+    )
+    next_block, count = key_pattern.subn(
+        lambda m: f"{m.group(1)}{value_repr}",
+        block,
+        count=1,
+    )
+    if not count:
+        next_block = _insert_meta_field(block, field, value_repr)
+    lines[start:end] = next_block.splitlines(keepends=True)
     return "".join(lines)
 
 
@@ -732,6 +779,13 @@ def _save_strategy_code(req: StrategyCodeSaveRequest, request: Request, *, legac
     path.parent.mkdir(parents=True, exist_ok=True)
 
     prepared = _prepare_strategy_code(req)
+
+    # AI 新建策略默认草稿态(research_only=True): 不进公开列表、不可运行, 需显式 publish。
+    # 仅 create 注入; update 保留既有 research_only, 避免静默取消已发布状态。
+    if expected_source == "ai" and (legacy_ai_path or req.mode == "create"):
+        prepared["code"] = _set_meta_bool_field(prepared["code"], "research_only", True)
+        prepared["meta"] = AIStrategyGenerator._extract_meta(prepared["code"])
+
     previous_code = path.read_text(encoding="utf-8") if path.exists() else None
     path.write_text(prepared["code"], encoding="utf-8")
 
@@ -763,6 +817,7 @@ def _save_strategy_code(req: StrategyCodeSaveRequest, request: Request, *, legac
         "source": expected_source,
         "path": str(path),
         "meta": prepared["meta"],
+        "research_only": prepared["meta"].get("research_only", False),
     }
 
 
@@ -828,6 +883,7 @@ def _build_prompt(req: BuildRequest) -> str:
             req.rules,
             req.strategy_id,
             req.execution_backend,
+            basic_filter=req.basic_filter,
         )
     if req.step == 2:
         return build_step2(req.current_code, req.instruction)
@@ -866,11 +922,11 @@ async def build_strategy_stream(req: BuildRequest, request: Request):
     async def event_generator():
         gen = AIStrategyGenerator()
         chunks: list[str] = []
-        yield json.dumps({"type": "meta", "strategy_id": req.strategy_id, "step": req.step}, ensure_ascii=False) + "\n"
+        yield json.dumps({"type": "meta", "strategy_id": req.strategy_id, "step": req.step}, ensure_ascii=False)
         try:
             async for chunk in gen.stream(prompt):
                 chunks.append(chunk)
-                yield json.dumps({"type": "delta", "content": chunk}, ensure_ascii=False) + "\n"
+                yield json.dumps({"type": "delta", "content": chunk}, ensure_ascii=False)
             result = gen.validate_code("".join(chunks))
             if gen.needs_structural_repair(result):
                 result = await gen.repair_code(result["code"], result["error"])
@@ -878,13 +934,23 @@ async def build_strategy_stream(req: BuildRequest, request: Request):
                 result = _normalize_build_result(result, req.strategy_id, req.name, req.description)
             elif req.strategy_id:
                 result = _normalize_build_result(result, req.strategy_id)
-            yield json.dumps({"type": "result", **result}, ensure_ascii=False) + "\n"
+            yield json.dumps({"type": "result", **result}, ensure_ascii=False)
         except RuntimeError as e:
-            yield json.dumps({"type": "error", "message": str(e)}, ensure_ascii=False) + "\n"
+            yield json.dumps({"type": "error", "message": str(e)}, ensure_ascii=False)
         except Exception as e:
-            yield json.dumps({"type": "error", "message": f"AI生成失败: {e}"}, ensure_ascii=False) + "\n"
+            yield json.dumps({"type": "error", "message": f"AI生成失败: {e}"}, ensure_ascii=False)
 
-    return StreamingResponse(event_generator(), media_type="application/x-ndjson")
+    # 与复盘/个股/财务/轮动的流式端点同口径: 事件行不带换行, 由外层统一补换行。
+    # with_heartbeat 插入的 ping 行本身不带换行, 事件行若自带换行, ping 会与下一行粘成一行。
+    async def stream_gen():
+        async for line in with_heartbeat(event_generator()):
+            yield line + "\n"
+
+    return StreamingResponse(
+        stream_gen(),
+        media_type="application/x-ndjson",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 
@@ -897,6 +963,37 @@ async def ai_generate(req: AIGenerateRequest, request: Request):
         raise HTTPException(status_code=400, detail=str(e)) from e
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"AI生成失败: {e}") from e
+    return result
+
+
+@router.post("/ai/iterate")
+async def ai_iterate(req: AIIterateRequest, request: Request):
+    """生成→回测→诊断→修改 的有界闭环 (只读回测, 产物为 ai_ 草稿, 不自动上线)。"""
+    from app.services.ai_provider import is_codex_cli_provider
+    from app.strategy.ai_iterator import AIStrategyIterator
+
+    # Codex CLI 无 tools= 协议, 迭代能力边界在入口 fail-closed (不静默降级为纯文本)。
+    if is_codex_cli_provider():
+        raise HTTPException(
+            status_code=400,
+            detail="当前 AI 供应商不支持工具调用迭代, 请改用 OpenAI 兼容模型",
+        )
+
+    engine = _get_engine(request)
+    data_dir = _data_dir(request)
+    try:
+        prompt = build_step1(
+            req.name, req.description, req.direction, req.rules,
+            strategy_id="", execution_backend=req.execution_backend,
+        )
+        iterator = AIStrategyIterator(max_rounds=req.max_rounds)
+        result = await iterator.iterate(prompt, engine=engine, data_dir=str(data_dir))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except Exception:
+        # 内部异常详情只进日志, 不透给客户端 (§8)
+        logger.exception("AI 迭代失败")
+        raise HTTPException(status_code=500, detail="AI 迭代失败, 请稍后重试")
     return result
 
 
@@ -1060,6 +1157,45 @@ async def ai_save(req: AISaveRequest, request: Request):
         return {"ok": True, "path": result["path"]}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.post("/{strategy_id}/publish")
+def publish_ai_strategy(strategy_id: str, request: Request):
+    """把 research_only 的 AI 草稿策略翻转为公开(research_only=False)。
+
+    门 = 人的显式动作: 只有 AI 来源且仍处于草稿态的策略才能被发布。
+    发布后即进入公开列表、可 run、可监控。
+    """
+    sid = _validate_strategy_id(strategy_id)
+    engine = _get_engine(request)
+    try:
+        s = engine.get(sid)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=f"策略 {sid} 不存在") from e
+
+    if s.source != "ai":
+        raise HTTPException(status_code=400, detail="仅 AI 策略可经发布端点上线")
+    if not s.meta.get("research_only"):
+        raise HTTPException(status_code=400, detail="该策略已是公开状态")
+
+    path = s.file_path
+    if path is None:
+        raise HTTPException(status_code=400, detail="策略源文件路径无效, 无法发布")
+    previous_code = path.read_text(encoding="utf-8")
+    path.write_text(_set_meta_bool_field(previous_code, "research_only", False), encoding="utf-8")
+
+    try:
+        engine.reload()
+        loaded = engine.get(sid)
+        if loaded.meta.get("research_only"):
+            raise ValueError("发布后策略仍为草稿态")
+    except Exception as e:
+        _restore_strategy_file(path, previous_code)
+        engine.reload()
+        raise HTTPException(status_code=500, detail=f"策略发布失败: {e}") from e
+
+    _invalidate_strategy_runtime(request)
+    return {"ok": True, "strategy_id": sid}
 
 
 @router.delete("/{strategy_id}")

@@ -65,6 +65,7 @@ def get_settings() -> dict:
         current_openai_reasoning_effort,
         current_ai_context_window,
         current_ai_max_output_tokens,
+        current_ai_round_checkpoint,
     )
 
     key = secrets_store.get_tickflow_key()
@@ -95,6 +96,7 @@ def get_settings() -> dict:
         "ai_user_agent": secrets_store.get_ai_config("ai_user_agent", settings.ai_user_agent),
         "ai_max_output_tokens": current_ai_max_output_tokens(),
         "ai_context_window": current_ai_context_window(),
+        "ai_round_checkpoint": current_ai_round_checkpoint(),
     }
 
 
@@ -257,6 +259,7 @@ class AiSettingsIn(BaseModel):
     user_agent: str = ""
     max_output_tokens: int | None = None   # 输出上限, 钳制所有任务的 max_tokens
     context_window: int | None = None      # 输入上下文窗口上限 (约 token)
+    round_checkpoint: int | None = None    # 助手工具轮次检查点; 0=不检查
 
 
 @router.post("/ai")
@@ -275,6 +278,7 @@ def save_ai_settings(req: AiSettingsIn) -> dict:
         current_openai_reasoning_effort,
         current_ai_context_window,
         current_ai_max_output_tokens,
+        current_ai_round_checkpoint,
         normalize_codex_command,
         normalize_codex_model,
         normalize_codex_reasoning_effort,
@@ -326,6 +330,12 @@ def save_ai_settings(req: AiSettingsIn) -> dict:
             raise HTTPException(status_code=400, detail="上下文窗口必须为正整数")
         updates["ai_context_window"] = req.context_window
         settings.ai_context_window = req.context_window
+    if req.round_checkpoint is not None:
+        # 0=关闭检查点(不询问), 正值须 ≥5 防误填 1/2 造成每轮都弹卡
+        if req.round_checkpoint != 0 and req.round_checkpoint < 5:
+            raise HTTPException(status_code=400, detail="轮次检查点须为 0(不检查)或不小于 5 的整数")
+        updates["ai_round_checkpoint"] = req.round_checkpoint
+        settings.ai_round_checkpoint = req.round_checkpoint
 
     if updates:
         secrets_store.save(updates)
@@ -343,6 +353,7 @@ def save_ai_settings(req: AiSettingsIn) -> dict:
         "ai_configured": ai_configured(provider),
         "ai_max_output_tokens": current_ai_max_output_tokens(),
         "ai_context_window": current_ai_context_window(),
+        "ai_round_checkpoint": current_ai_round_checkpoint(),
     }
 
 
@@ -372,10 +383,33 @@ def clear_ai_settings() -> dict:
     settings.ai_model = ""
     settings.ai_codex_command = "codex"
     settings.ai_codex_reasoning_effort = ""
-    settings.ai_max_output_tokens = 8192
-    settings.ai_context_window = 64000
+    settings.ai_max_output_tokens = 16384
+    settings.ai_context_window = 128000
 
     return {"ok": True}
+
+
+@router.get("/ai/sponsor-models")
+async def list_sponsor_models() -> dict:
+    """代理获取赞助商(RunningHub)的模型列表。
+
+    其网关按 Origin 头过滤: 浏览器跨域请求只会拿到国产模型子集,
+    服务端请求无 Origin 头可取全量, 故由后端代理转发。
+    """
+    import httpx
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            res = await client.get("https://llm.runninghub.ai/v1/models")
+            res.raise_for_status()
+            data = res.json()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"获取模型列表失败: {exc}") from exc
+    models = sorted({
+        item.get("id") for item in data.get("data", [])
+        if isinstance(item, dict) and isinstance(item.get("id"), str) and item["id"]
+    })
+    return {"models": models}
 
 
 # ===== 偏好设置 =====
@@ -537,6 +571,10 @@ def get_preferences() -> dict:
         "feishu_webhook_url": preferences.get_feishu_webhook_url(),
         "feishu_webhook_secret": preferences.get_feishu_webhook_secret(),
         "wecom_webhook_url": preferences.get_wecom_webhook_url(),
+        "custom_webhook_url": preferences.get_custom_webhook_url(),
+        "custom_webhook_secret_set": bool(secrets_store.get_custom_webhook_secret()),
+        "email_smtp_config": preferences.get_email_smtp_config(),
+        "email_smtp_password_set": bool(secrets_store.get_email_smtp_password()),
         "wecom_bot_id": preferences.get_wecom_bot_id(),
         "wecom_bot_secret": preferences.get_wecom_bot_secret(),
         "wecom_bot_enabled": preferences.get_wecom_bot_enabled(),
@@ -547,12 +585,14 @@ def get_preferences() -> dict:
         "monitor_ext_fields": preferences.get_monitor_ext_fields(),
         "nav_order": preferences.get_nav_order(),
         "nav_hidden": preferences.get_nav_hidden(),
+        "dashboard_layout": preferences.get_dashboard_layout(),
         "screener_auto_run": preferences.get_screener_auto_run(),
         "limit_ladder_monitor_enabled": preferences.get_limit_ladder_monitor_enabled(),
         "depth_polling_interval": preferences.get_depth_polling_interval(),
         "depth_finalize_time": preferences.get_depth_finalize_time(),
         "review_schedule": preferences.get_review_schedule(),
         "review_push_channels": preferences.get_review_push_channels(),
+        "review_push_mode": preferences.get_review_push_mode(),
         **preferences.get_mining_schedule(),
     }
 
@@ -587,6 +627,7 @@ def get_capability_matrix() -> dict:
             "realtime_data_provider": preferences.get_realtime_data_provider(),
             "daily_data_provider": preferences.get_daily_data_provider(),
             "minute_data_provider": preferences.get_minute_data_provider(),
+            "full_minute_data_provider": preferences.get_full_minute_data_provider(),
             "depth5_data_provider": preferences.get_depth5_data_provider(),
             "adj_factor_provider": preferences.get_adj_factor_provider(),
             "financial_data_provider": preferences.get_financial_provider(),
@@ -805,7 +846,7 @@ def update_data_source_job_timeouts(req: DataSourceJobTimeoutPrefs) -> dict:
 
 @router.put("/preferences/minute-batch-compress")
 def update_minute_batch_compress(req: MinuteBatchCompressPrefs) -> dict:
-    """保存分时批量响应的 gzip 传输压缩开关。逐请求即时读取, 保存后立即生效。"""
+    """保存分时详情与批量响应的 gzip 传输压缩开关。逐请求即时读取, 保存后立即生效。"""
     from app.services import preferences
     preferences.save({"minute_batch_compress": req.minute_batch_compress})
     return {"minute_batch_compress": preferences.get_minute_batch_compress()}
@@ -813,7 +854,7 @@ def update_minute_batch_compress(req: MinuteBatchCompressPrefs) -> dict:
 
 @router.put("/preferences/daily-batch-compress")
 def update_daily_batch_compress(req: DailyBatchCompressPrefs) -> dict:
-    """保存日K批量响应的 gzip 传输压缩开关 (与分时独立)。逐请求即时读取。"""
+    """保存日K详情与批量响应的 gzip 传输压缩开关 (与分时独立)。逐请求即时读取。"""
     from app.services import preferences
     preferences.save({"daily_batch_compress": req.daily_batch_compress})
     return {"daily_batch_compress": preferences.get_daily_batch_compress()}
@@ -861,6 +902,22 @@ def update_nav_hidden(req: NavHiddenIn) -> dict:
     from app.services import preferences
     saved = preferences.set_nav_hidden(req.nav_hidden)
     return {"nav_hidden": saved}
+
+
+class DashboardLayoutIn(BaseModel):
+    """看板自定义布局; layout=null 恢复默认。"""
+    layout: dict | None = None
+
+
+@router.put("/preferences/dashboard-layout")
+def update_dashboard_layout(req: DashboardLayoutIn) -> dict:
+    """保存看板自定义布局(网格 blob); null = 清除回默认布局。"""
+    from app.services import preferences
+    try:
+        saved = preferences.set_dashboard_layout(req.layout)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"dashboard_layout": saved}
 
 
 @router.put("/preferences/watchlist-columns")
@@ -1232,8 +1289,88 @@ def update_wecom_webhook(req: WecomWebhookPrefsIn) -> dict:
     return {"wecom_webhook_url": saved_url}
 
 
+class CustomWebhookPrefsIn(BaseModel):
+    url: str
+    # None preserves the stored secret; an explicit empty string clears it.
+    secret: str | None = None
+
+
+@router.put("/preferences/custom-webhook")
+def update_custom_webhook(req: CustomWebhookPrefsIn) -> dict:
+    """Configure the generic third-party JSON webhook and optional HMAC secret."""
+    from app.services import preferences, webhook_adapter
+
+    url = (req.url or "").strip()
+    if url and not webhook_adapter.is_valid_custom_url(url):
+        raise HTTPException(status_code=400, detail="Webhook 地址必须是完整的 HTTP(S) URL")
+    saved_url = preferences.set_custom_webhook_url(url)
+    if not saved_url:
+        secrets_store.set_custom_webhook_secret("")
+    elif req.secret is not None:
+        secrets_store.set_custom_webhook_secret(req.secret)
+    return {
+        "custom_webhook_url": saved_url,
+        "custom_webhook_secret_set": bool(secrets_store.get_custom_webhook_secret()),
+    }
+
+
+class EmailSmtpPrefsIn(BaseModel):
+    host: str
+    port: int = Field(default=465, ge=1, le=65535)
+    security: Literal["ssl", "starttls", "none"] = "ssl"
+    username: str = ""
+    # None preserves the stored password; an explicit empty string clears it.
+    password: str | None = None
+    from_address: str = ""
+    to_addresses: list[str] = Field(default_factory=list)
+
+
+@router.put("/preferences/email-smtp")
+def update_email_smtp(req: EmailSmtpPrefsIn) -> dict:
+    """Configure the SMTP transport shared by monitor alerts and review reports."""
+    from app.services import email_adapter, preferences
+
+    host = (req.host or "").strip()
+    username = (req.username or "").strip()
+    from_address = (req.from_address or username).strip()
+    recipients = list(dict.fromkeys(item.strip() for item in req.to_addresses if item.strip()))
+    if host:
+        if not from_address or not email_adapter.is_valid_email(from_address):
+            raise HTTPException(status_code=400, detail="请填写有效的发件人邮箱")
+        if not recipients or any(not email_adapter.is_valid_email(item) for item in recipients):
+            raise HTTPException(status_code=400, detail="请至少填写一个有效的收件人邮箱")
+        effective_password = (
+            secrets_store.get_email_smtp_password()
+            if req.password is None
+            else req.password
+        )
+        if username and not effective_password:
+            raise HTTPException(status_code=400, detail="已填写 SMTP 登录用户名, 请同时填写密码或授权码")
+    else:
+        username = ""
+        from_address = ""
+        recipients = []
+
+    config = preferences.set_email_smtp_config({
+        "host": host,
+        "port": req.port,
+        "security": req.security,
+        "username": username,
+        "from_address": from_address,
+        "to_addresses": recipients,
+    })
+    if not host or not username:
+        secrets_store.set_email_smtp_password("")
+    elif req.password is not None:
+        secrets_store.set_email_smtp_password(req.password)
+    return {
+        "email_smtp_config": config,
+        "email_smtp_password_set": bool(secrets_store.get_email_smtp_password()),
+    }
+
+
 class WebhookTestIn(BaseModel):
-    channel: Literal["feishu", "wecom"]
+    channel: Literal["feishu", "wecom", "custom", "email"]
 
 
 @router.post("/preferences/webhook-test")
@@ -1259,16 +1396,43 @@ def test_webhook(req: WebhookTestIn) -> dict:
         secret = preferences.get_feishu_webhook_secret()
         # 诊断用途单次尝试: 失败即返回, 不等生产退避重试 (~17s)
         ok = webhook_adapter.send_feishu(url, title, body, secret, max_attempts=1)
-    else:  # wecom
+    elif req.channel == "wecom":
         url = preferences.get_wecom_webhook_url()
         if not url:
             return {"ok": False, "detail": "尚未配置企业微信 Webhook，请先保存"}
         if not webhook_adapter.is_valid_wecom_url(url):
             return {"ok": False, "detail": "已保存的企业微信 Webhook 地址非法，请重新保存"}
         ok = webhook_adapter.send_wecom(url, title, body)
+    elif req.channel == "custom":
+        url = preferences.get_custom_webhook_url()
+        if not url:
+            return {"ok": False, "detail": "尚未配置第三方 Webhook, 请先保存"}
+        if not webhook_adapter.is_valid_custom_url(url):
+            return {"ok": False, "detail": "已保存的第三方 Webhook 地址非法, 请重新保存"}
+        ok = webhook_adapter.send_custom(
+            url,
+            title,
+            body,
+            event_type="test",
+            secret=secrets_store.get_custom_webhook_secret(),
+            max_attempts=1,
+        )
+    else:  # email
+        from app.services import email_adapter
+
+        config = preferences.get_email_smtp_config()
+        if not email_adapter.is_configured(config):
+            return {"ok": False, "detail": "尚未完整配置邮件 SMTP, 请先保存"}
+        ok = email_adapter.send_email(
+            config,
+            secrets_store.get_email_smtp_password(),
+            title,
+            body,
+            max_attempts=1,
+        )
 
     if ok:
-        return {"ok": True, "detail": "测试消息已发送，请到群内查收"}
+        return {"ok": True, "detail": "测试消息已发送, 请检查对应接收端"}
     return {"ok": False, "detail": "推送失败：网络不可达或地址/密钥不正确，详情见后端日志"}
 
 
@@ -1353,7 +1517,7 @@ def update_webhook_enabled_default(req: WebhookEnabledDefaultIn) -> dict:
 
 
 class WebhookDefaultChannelsIn(BaseModel):
-    channels: list[str]  # 多选: ['feishu','wecom'] 等; 空数组=默认不推送
+    channels: list[str]  # 多选: feishu / wecom / custom / email; 空数组=不推送
 
 
 @router.put("/preferences/webhook-default-channels")
@@ -1374,7 +1538,7 @@ def update_quote_interval(req: QuoteIntervalIn, request: Request) -> dict:
     """更新行情轮询间隔。按档位自动 clamp。"""
     qs = getattr(request.app.state, "quote_service", None)
     if not qs:
-        return {"interval": req.interval, "min_interval": qs.get_min_interval(), "max_interval": 60.0}
+        return {"interval": req.interval, "min_interval": 6.0, "max_interval": 60.0}
     clamped = qs.set_interval(req.interval)
     return {
         "interval": clamped,
@@ -1554,7 +1718,9 @@ async def test_endpoint(req: TestEndpointIn) -> dict:
     import statistics
 
     base = req.url.rstrip("/")
-    rounds = max(1, min(10, req.rounds or _endpoints_cache.get("data", {}).get("testRounds", 5)))
+    # 缓存初值的 "data" 是 None(键存在, get 的默认值不生效), 端点清单未预热时要兜底
+    manifest = _endpoints_cache.get("data") or {}
+    rounds = max(1, min(10, req.rounds or manifest.get("testRounds", 5)))
     health_url = base + "/health"
 
     latencies: list[float] = []
@@ -1796,17 +1962,62 @@ def update_review_schedule(req: ReviewScheduleIn, request: Request) -> dict:
 
 
 class ReviewPushIn(BaseModel):
-    channels: list[str]  # 多选: ['feishu'] 等; 空数组=不推送。微信等开发中
+    channels: list[str]  # 多选: feishu / wecom / custom / email; 空数组=不推送
+    mode: str | None = None  # 可选: auto=归档即推 / manual=仅显式 push; 不传则不变
 
 
 @router.put("/preferences/review-push")
 def update_review_push(req: ReviewPushIn) -> dict:
-    """复盘推送渠道(多选) — 选定把复盘报告(手动生成 / 定时生成归档后)推送到哪些外部工具。
+    """复盘推送设置(渠道多选 + 触发方式)。
 
     纯偏好, 与定时复盘 / 实时行情完全独立, 常驻可单独设置。空数组=不推送。
     实际推送由归档端点(POST /api/market-recap/reports)与定时任务(_run_scheduled_review)
-    在归档后读取本列表逐个推送。白名单外的渠道会被过滤掉。
+    在归档后读取渠道列表, 并按 review_push_mode 决定是否外发:
+      - manual: 定时复盘只归档不推送, 手动保存需显式 push=true
+      - auto: 归档即推(行为与旧逻辑一致)
+    白名单外的渠道会被过滤掉, 白名单外的 mode 值回退 manual。
     """
     from app.services import preferences
     saved = preferences.set_review_push_channels(req.channels)
-    return {"review_push_channels": saved}
+    mode = preferences.get_review_push_mode()
+    if req.mode is not None:
+        mode = preferences.set_review_push_mode(req.mode)
+    return {"review_push_channels": saved, "review_push_mode": mode}
+
+
+# ================================================================
+# API Token 管理 (open-platform-plan §4) — 仅 UI 会话可达
+# (挂在 /api/settings 前缀下, 受访问密码保护; Token 通道无对应 scope,
+#  网关规则表里没有本组端点, Bearer 调用会被 403 拒绝)
+# ================================================================
+class ApiTokenCreateIn(BaseModel):
+    name: str
+    scopes: list[str]
+
+
+@router.get("/api-tokens")
+def api_tokens_list(request: Request) -> dict:
+    from app.services import api_tokens as svc
+
+    return {"tokens": svc.list_tokens(request.app.state.repo.store.data_dir)}
+
+
+@router.post("/api-tokens")
+def api_tokens_create(body: ApiTokenCreateIn, request: Request) -> dict:
+    """创建 Token — 明文只在本次响应出现一次, 前端弹窗提示立即保存。"""
+    from app.services import api_tokens as svc
+
+    try:
+        record, plaintext = svc.create_token(request.app.state.repo.store.data_dir, body.name, body.scopes)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return {"token": record, "plaintext": plaintext}
+
+
+@router.delete("/api-tokens/{token_id}")
+def api_tokens_revoke(token_id: str, request: Request) -> dict:
+    from app.services import api_tokens as svc
+
+    if not svc.revoke_token(request.app.state.repo.store.data_dir, token_id):
+        raise HTTPException(status_code=404, detail=f"Token '{token_id}' 不存在")
+    return {"status": "revoked", "id": token_id}

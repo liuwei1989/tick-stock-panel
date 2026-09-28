@@ -19,6 +19,8 @@ from app.api import (
     backtest,
     data,
     ext_data,
+    events,
+    factors,
     financials,
     indices,
     intraday,
@@ -28,10 +30,12 @@ from app.api import (
     mining,
     monitor_rules,
     overview,
+    paper,
     pipeline,
     regime,
     rps,
     screener,
+    sector_rotation,
     signals,
     stock_analysis,
     strategy,
@@ -104,6 +108,15 @@ async def _application_lifespan(app: FastAPI):
     repo = KlineRepository(store)
     app.state.datastore = store
     app.state.repo = repo
+    # 自定义/复合因子载入注册表 (P3); 单个失败只跳过该因子 (fail-隔离)
+    from app.factors.store import load_into_registry
+
+    try:
+        loaded_factors = load_into_registry(store.data_dir)
+        if loaded_factors:
+            logger.info("custom factors loaded: %s", len(loaded_factors))
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("custom factors load failed: %s", exc)
     from app.services.mining_manager import MiningJobManager
 
     mining_manager = MiningJobManager(store.data_dir)
@@ -125,11 +138,6 @@ async def _application_lifespan(app: FastAPI):
     # instruments/index/ETF 仍同步 (毫秒级)。应用立即 ready, 指标算完后自动替换。
     repo.refresh_cache(background=True)
 
-    # 能力探测
-    capset = detect_capabilities()
-    app.state.capabilities = capset
-    logger.info("ready; %d capabilities active", len(capset.all()))
-
     # 自定义数据源配置(可选): 失败只记录错误, 不影响 TickFlow 基准路径。
     try:
         from app.data_providers import custom as custom_sources
@@ -137,6 +145,11 @@ async def _application_lifespan(app: FastAPI):
         logger.info("custom data sources loaded: %d", len(custom_sources.list_sources()))
     except Exception as e:  # noqa: BLE001
         logger.warning("custom data sources init failed: %s", e)
+
+    # 自定义源必须先注册,能力探测才能补充其数据集能力。
+    capset = detect_capabilities()
+    app.state.capabilities = capset
+    logger.info("ready; %d capabilities active", len(capset.all()))
 
     # 全局行情服务
     qs = QuoteService()
@@ -228,6 +241,10 @@ async def _application_lifespan(app: FastAPI):
     financial_scheduler.start(store.data_dir, capset)
     app.state.financial_scheduler = financial_scheduler
 
+    # 自愈看门狗: 探测 polars 闸与写锁, 僵死时退出交由 supervisor 拉起 (兜底层)。
+    from app.watchdog import start_watchdog
+    app.state.watchdog = start_watchdog(app.state, repo)
+
     # 策略引擎
     from app.strategy.engine import StrategyEngine
     from app.strategy import config as strategy_config
@@ -274,7 +291,7 @@ async def _application_lifespan(app: FastAPI):
                     return
 
                 with shared_heavy_job_limiter.slot(
-                    "normal",
+                    "exclusive",
                     cancel_event=matrix_prewarm_owner.cancel_event,
                 ):
                     result = prewarm_matrix_cache(
@@ -345,6 +362,9 @@ async def _application_lifespan(app: FastAPI):
         yield
     finally:
         repo._on_refresh_done = None  # noqa: SLF001
+        wd = getattr(app.state, "watchdog", None)
+        if wd:
+            await wd.stop()
         if not matrix_prewarm_owner.shutdown(timeout=5.0):
             logger.warning("matrix cache prewarm did not stop within 5 seconds")
         mmanager = getattr(app.state, "mining_manager", None)
@@ -412,7 +432,18 @@ app.add_middleware(
 #   3. 已设密码              → 检查 session, 无效则 401(前端跳登录)
 # 白名单: /api/auth/* (设密码/登录本身)、/health 等探活。
 _AUTH_WHITELIST_PREFIX = ("/api/auth/",)
-_AUTH_WHITELIST_EXACT = ("/health", "/api/health", "/openapi.json", "/docs", "/redoc")
+_AUTH_WHITELIST_EXACT = (
+    "/health",
+    "/api/health",
+    "/openapi.json",
+    "/api/openapi.json",
+    "/docs",
+    "/redoc",
+    # SSE 事件流: EventSource 带不了 Authorization 头, 凭证即 query 里的
+    # 一次性票据, 端点内校验 (api/events.py); POST /api/events/ticket 不在
+    # 白名单, 仍走网关 Bearer 通道
+    "/api/events",
+)
 
 
 @app.middleware("http")
@@ -421,9 +452,29 @@ async def auth_middleware(request: Request, call_next):
     # 仅 /api/ 走认证; 静态资源(前端页面/assets)放行, 由前端处理跳转
     if not path.startswith("/api/"):
         return await call_next(request)
+    # CORS 预检不带凭据, 直接放行 (CORSMiddleware 在外层应答)
+    if request.method == "OPTIONS":
+        return await call_next(request)
     # 白名单放行(设密码/登录/探活本身不拦)
     if path.startswith(_AUTH_WHITELIST_PREFIX) or path in _AUTH_WHITELIST_EXACT:
         return await call_next(request)
+
+    # ── API Token 通道 (外部调用方; 与密码会话并行, 见 open-platform-plan §4) ──
+    authz = request.headers.get("authorization", "")
+    if authz.startswith("Bearer "):
+        from app.services import api_gateway
+        verdict = api_gateway.evaluate(
+            settings.data_dir, request.method, path, authz[len("Bearer "):].strip(),
+        )
+        if verdict["status"] is not None:
+            return JSONResponse(
+                status_code=verdict["status"], content={"detail": verdict["detail"]},
+                headers=verdict["headers"],
+            )
+        response = await call_next(request)
+        for k, v in verdict["headers"].items():
+            response.headers[k] = v
+        return response
 
     from app.services import auth as auth_service
     # 情况 1+2: 未设密码
@@ -455,10 +506,12 @@ app.include_router(kline.router)
 app.include_router(watchlist.router)
 app.include_router(screener.router)
 app.include_router(backtest.router)
+app.include_router(factors.router)
 app.include_router(mining.router)
 app.include_router(intraday.router)
 app.include_router(indices.router)
 app.include_router(overview.router)
+app.include_router(paper.router)
 app.include_router(abnormal.router)
 app.include_router(regime.router)
 app.include_router(analysis.router)
@@ -474,7 +527,9 @@ app.include_router(signals.router)
 app.include_router(monitor_rules.router)
 app.include_router(lots.router)
 app.include_router(alerts.router)
+app.include_router(events.router)
 app.include_router(rps.router)
+app.include_router(sector_rotation.router)
 
 # 二次开发路由与小粒度策略在所有核心路由后注册, 禁止覆盖核心路径。
 extension_registry, extension_load_errors = configure_backend_extensions(app)
@@ -488,6 +543,32 @@ app.state.extension_load_errors = extension_load_errors
 from fastapi import Request
 from fastapi.responses import JSONResponse
 from app.tickflow.capabilities import CapabilityDenied
+
+
+@app.get("/api/openapi.json", include_in_schema=False)
+async def openapi_contract_view(tier: str = "a"):
+    """Tier A 契约视图: 只保留对外开放 (Token 可达) 的端点 = 稳定承诺面。
+
+    开放清单的权威来源是 api_gateway 的规则表 — 规则表即契约, 单源维护。
+    二开方以此生成客户端; 未出现在此视图的端点属内部实现, 随时变化。
+    """
+    spec = app.openapi()
+    if tier == "a":
+        from app.services import api_gateway
+
+        kept_paths: dict = {}
+        for path, ops in spec.get("paths", {}).items():
+            kept_ops = {}
+            for method, op in ops.items():
+                if method in ("get", "post", "put", "delete", "patch") and api_gateway.required_scope(
+                    method.upper(), path,
+                ):
+                    kept_ops[method] = op
+            if kept_ops:
+                kept_paths[path] = kept_ops
+        spec["paths"] = kept_paths
+        spec["x-tier"] = "a"
+    return JSONResponse(spec)
 
 
 @app.exception_handler(CapabilityDenied)

@@ -105,11 +105,7 @@ export function useParamSweep(strategies: StrategyDetail[], onStrategyChange?: (
       const s = sweeps[p.id]
       if (!s?.enabled) continue
       if (p.type === 'bool') grid[p.id] = [true, false]
-      else if (p.type === 'select') {
-        grid[p.id] = (p.options ?? []).map(option => (
-          typeof option === 'object' ? option.value : option
-        ))
-      }
+      else if (p.type === 'select') grid[p.id] = p.options ?? []
       else grid[p.id] = { min: Number(s.min), max: Number(s.max), step: Number(s.step) }
     }
     return grid

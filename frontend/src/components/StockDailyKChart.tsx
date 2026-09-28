@@ -38,14 +38,15 @@ interface Props {
   showMarkerToggle?: boolean
   showMA?: boolean
   showInfoBar?: boolean
-  visibleBars?: number
+  /** 初始可见蜡烛根数; 'all' = 适配显示全部数据 */
+  visibleBars?: number | 'all'
   linkedPrice?: number | null
   onDateClick?: (date: string) => void
   onPriceDoubleClick?: (price: number, currentPrice: number) => void
   /** 扩展数据列参数（逗号分隔 config_id.field_name），透传给 klineDaily 接口 */
   extColumns?: string
-  /** 日K自动刷新间隔(ms)。undefined = 不轮询(默认)。个股对话框实时刷新时传入, 盘中今日蜡烛随之更新 */
-  refetchIntervalMs?: number
+  /** 加入自选日 (北京时间 YYYY-MM-DD); 有值时日K主图绘制「自选」竖虚线 */
+  addedDate?: string | null
 }
 
 function isValidRow(r: any): boolean {
@@ -103,6 +104,30 @@ export function getDefaultRange(): { start: string; end: string } {
   return { start, end }
 }
 
+/** 工具栏小胶囊开关（指标与标注开关共用一套尺寸/关闭态样式，激活色由调用方给字面量）。 */
+function ChartPill({
+  active, label, activeClass, title, onClick,
+}: {
+  active: boolean
+  label: string
+  activeClass: string
+  title?: string
+  onClick: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      title={title}
+      className={`px-2 py-0.5 rounded text-[10px] font-mono cursor-pointer transition-colors ${
+        active ? activeClass : 'bg-elevated text-muted hover:text-secondary'
+      }`}
+    >
+      {label}
+    </button>
+  )
+}
+
 export function StockDailyKChart({
   symbol,
   height = 520,
@@ -121,17 +146,19 @@ export function StockDailyKChart({
   onDateClick,
   onPriceDoubleClick,
   extColumns,
-  refetchIntervalMs,
+  addedDate,
 }: Props) {
   const [activeIndicators, setActiveIndicators] = useState<string[]>(['vol'])
   const [showMarkers, setShowMarkers] = useState(true)
+  // 加入自选日标注（与「异动」标记相互独立）
+  const [showAddedMark, setShowAddedMark] = useState(true)
   const [volumeCompare, setVolumeCompare] = useState<VolumeCompareConfig>(() =>
     normalizeVolumeCompare(storage.stockVolumeCompare.get(DEFAULT_VOLUME_COMPARE)),
   )
   const dateRange = externalDateRange ?? getDefaultRange()
 
   // 查询配置统一来自 klineDailyQueryOptions, 与 StockPanel 信息条/邻近预取共享同一 cache key (只发一次请求)
-  const kline = useQuery({ ...klineDailyQueryOptions(symbol, dateRange, extColumns), enabled: !!symbol, refetchInterval: refetchIntervalMs })
+  const kline = useQuery({ ...klineDailyQueryOptions(symbol, dateRange, extColumns), enabled: !!symbol })
 
   const rows = useMemo(() => toOHLC(kline.data?.rows ?? []), [kline.data?.rows])
   const stockInfo = kline.data?.stock_info
@@ -168,30 +195,22 @@ export function StockDailyKChart({
       {showIndicatorControls && rows.length > 0 && (
         <div className="flex items-center gap-1.5 px-1 pb-0.5">
           {SUB_CHARTS.map(ind => (
-            <button
+            <ChartPill
               key={ind.key}
+              active={activeIndicators.includes(ind.key)}
+              label={ind.label}
+              activeClass="bg-accent/20 text-accent"
               onClick={() => toggleIndicator(ind.key)}
-              className={`px-2 py-0.5 rounded text-[10px] font-mono cursor-pointer transition-colors ${
-                activeIndicators.includes(ind.key)
-                  ? 'bg-accent/20 text-accent'
-                  : 'bg-elevated text-muted hover:text-secondary'
-              }`}
-            >
-              {ind.label}
-            </button>
+            />
           ))}
           {OVERLAY_INDICATORS.map(ind => (
-            <button
+            <ChartPill
               key={ind.key}
+              active={activeIndicators.includes(ind.key)}
+              label={ind.label}
+              activeClass="bg-accent/20 text-accent"
               onClick={() => toggleIndicator(ind.key)}
-              className={`px-2 py-0.5 rounded text-[10px] font-mono cursor-pointer transition-colors ${
-                activeIndicators.includes(ind.key)
-                  ? 'bg-accent/20 text-accent'
-                  : 'bg-elevated text-muted hover:text-secondary'
-              }`}
-            >
-              {ind.label}
-            </button>
+            />
           ))}
           {activeIndicators.includes('vol') && (
             <div className="ml-0.5 flex h-5 items-center gap-1.5 border-l border-border/70 pl-2">
@@ -224,18 +243,27 @@ export function StockDailyKChart({
               </select>
             </div>
           )}
-          {showMarkerToggle && showLimitMarkers && (
-            <button
-              onClick={() => setShowMarkers(v => !v)}
-              className={`ml-auto px-2 py-0.5 rounded text-[10px] font-mono cursor-pointer transition-colors ${
-                showMarkers
-                  ? 'text-[#FACC15] bg-[#FACC15]/10'
-                  : 'bg-elevated text-muted hover:text-secondary'
-              }`}
-            >
-              异动
-            </button>
-          )}
+          {/* 两个标注开关统一右对齐 */}
+          <div className="ml-auto flex items-center gap-1.5">
+            {showMarkerToggle && showLimitMarkers && (
+              <ChartPill
+                active={showMarkers}
+                label="异动"
+                activeClass="text-[#FACC15] bg-[#FACC15]/10"
+                onClick={() => setShowMarkers(v => !v)}
+              />
+            )}
+            {/* 激活色与图表里的 ADDED_DATE_COLOR 一致; Tailwind 只认字面量类名, 故写死色值 */}
+            {showMarkerToggle && addedDate && (
+              <ChartPill
+                active={showAddedMark}
+                label="自选"
+                activeClass="text-[#3B82F6] bg-[#3B82F6]/10"
+                title={showAddedMark ? '隐藏K线上的加入自选日标注' : '显示K线上的加入自选日标注'}
+                onClick={() => setShowAddedMark(v => !v)}
+              />
+            )}
+          </div>
         </div>
       )}
       {kline.isLoading && <div className="text-sm text-muted py-4">加载中…</div>}
@@ -261,6 +289,7 @@ export function StockDailyKChart({
           visibleBars={visibleBars}
           activeIndicators={activeIndicators}
           volumeCompare={volumeCompare}
+          addedDate={showAddedMark ? addedDate : null}
         />
       )}
     </div>

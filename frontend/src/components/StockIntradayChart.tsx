@@ -3,14 +3,16 @@ import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Loader2 } from 'lucide-react'
 import { api, type MinuteKlineRow } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
-import { klineMinuteQueryOptions } from '@/lib/kline'
+import { klineMinuteQueryOptions, minuteRefetchInterval } from '@/lib/kline'
 import { EChartsIntraday } from '@/components/EChartsIntraday'
+import type { DailySummary } from '@/lib/intraday-chart'
 
 interface Props {
   symbol: string
   date: string | null
   height?: number
   prevClose?: number
+  dailySummary?: DailySummary
   className?: string
   onPriceHover?: (price: number | null) => void
   onPriceDoubleClick?: (price: number, currentPrice: number) => void
@@ -25,6 +27,7 @@ export function StockIntradayChart({
   date,
   height = 520,
   prevClose,
+  dailySummary,
   className,
   onPriceHover,
   onPriceDoubleClick,
@@ -40,7 +43,7 @@ export function StockIntradayChart({
     // 避免读到分钟增量落盘的上一轮本地分区; 历史日期后端自行忽略 live。
     ...klineMinuteQueryOptions(symbol, date ?? undefined, refetchIntervalMs != null),
     enabled: !!symbol && !!date,
-    refetchInterval: refetchIntervalMs,
+    refetchInterval: minuteRefetchInterval(refetchIntervalMs),
   })
 
   const fetchMinute = useMutation({
@@ -95,7 +98,7 @@ export function StockIntradayChart({
               <div className="text-xs text-muted">暂无分钟数据</div>
               <button
                 onClick={() => setMinuteDismissed(false)}
-                className="px-4 py-1.5 rounded-btn bg-accent/90 text-base text-xs font-medium hover:bg-accent transition-colors duration-150"
+                className="px-4 py-1.5 rounded-btn bg-accent/90 text-white text-xs font-medium hover:bg-accent transition-colors duration-150"
               >
                 获取分钟K
               </button>
@@ -106,7 +109,7 @@ export function StockIntradayChart({
               <div className="flex items-center gap-3">
                 <button
                   onClick={() => fetchMinute.mutate()}
-                  className="px-4 py-1.5 rounded-btn bg-accent/90 text-base text-xs font-medium hover:bg-accent transition-colors duration-150"
+                  className="px-4 py-1.5 rounded-btn bg-accent/90 text-white text-xs font-medium hover:bg-accent transition-colors duration-150"
                 >
                   确定
                 </button>
@@ -125,7 +128,8 @@ export function StockIntradayChart({
         <EChartsIntraday
           data={minuteRows}
           height={height}
-          prevClose={prevClose}
+          prevClose={minute.data?.prev_close ?? prevClose}
+          dailySummary={dailySummary}
           date={date}
           priceLimit={minute.data?.price_limit ?? undefined}
           onPriceHover={onPriceHover}

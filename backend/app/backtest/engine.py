@@ -72,6 +72,8 @@ class MatcherConfig:
     # 分钟K精确成交: 开启后, 信号触发日的成交价用当日分钟K优化
     # (有参考线→穿越价, 无参考线→VWAP)。数据缺失时降级为日K口径。
     minute_fill: bool = False
+    # 回测资产类型: 分钟K按资产类型分开存储, 精确成交据此路由分钟分区 (不凭代码格式猜测)。
+    asset_type: str = "stock"
 
     def __post_init__(self) -> None:
         # 解析最终口径: 优先 entry_fill/exit_fill, 否则回退到 matching (向后兼容)。
@@ -300,6 +302,14 @@ class PanelCache:
         return f"{asset_type}:{generation or 'unmanaged'}:{h}:{start}:{end}:{cols}"
 
 
+# 等待进行中 enriched 发布的上限与轮询间隔。孤儿标记由 get_enriched_generation
+# 在读取时直接自愈, 因此这里等到的 EnrichedGenerationUnavailableError 意味着
+# 发布方确实存活 —— 对回测/优化这类长任务, 有界等待优于立即失败。仅用于
+# worker 任务路径 (矩阵加载), 实时热路径不得调用 data_generation_await。
+_GENERATION_WAIT_TIMEOUT_S = 300.0
+_GENERATION_POLL_S = 1.0
+
+
 # ================================================================
 # BacktestEngine
 # ================================================================
@@ -316,6 +326,25 @@ class BacktestEngine:
     def data_generation(self, asset_type: str = "stock") -> str | None:
         loader = getattr(self.repo, "get_matrix_data_generation", None)
         return loader(asset_type) if callable(loader) else None
+
+    def data_generation_await(
+        self,
+        asset_type: str = "stock",
+        *,
+        cancel_event: threading.Event | None = None,
+        timeout_s: float = _GENERATION_WAIT_TIMEOUT_S,
+    ) -> str | None:
+        """获取 generation; 发布进行中时在超时窗口内轮询, 可被取消事件打断。"""
+        deadline = time.monotonic() + timeout_s
+        while True:
+            try:
+                return self.data_generation(asset_type)
+            except EnrichedGenerationUnavailableError:
+                if cancel_event is not None and cancel_event.is_set():
+                    raise
+                if time.monotonic() >= deadline:
+                    raise
+                time.sleep(_GENERATION_POLL_S)
 
     def assert_data_generation(
         self,
@@ -506,15 +535,10 @@ class BacktestEngine:
             if cache_profile is not None
             else settings.backtest_matrix_cache_max_mb * 1024 * 1024
         )
-        generation_loader = getattr(self.repo, "get_matrix_data_generation", None)
         source_generation = (
             expected_generation
             if expected_generation is not None
-            else (
-                generation_loader(asset_type)
-                if callable(generation_loader)
-                else None
-            )
+            else self.data_generation_await(asset_type, cancel_event=cancel_event)
         )
         attempts = 1 if expected_generation is not None else 2
         for attempt in range(attempts):
@@ -555,7 +579,9 @@ class BacktestEngine:
             except EnrichedGenerationUnavailableError:
                 if attempt + 1 >= attempts:
                     raise
-                source_generation = self.data_generation(asset_type)
+                source_generation = self.data_generation_await(
+                    asset_type, cancel_event=cancel_event
+                )
             except pa.ArrowException as exc:
                 raise ValueError(f"direct market matrix parquet scan failed: {exc}") from exc
         raise EnrichedGenerationUnavailableError(
@@ -855,7 +881,7 @@ class BacktestEngine:
             dates = {matrix.timestamp_labels[int(t)][:10] for t in trigger_times}
             symbols = {matrix.symbols[int(a)] for a in trigger_assets}
             if dates and symbols:
-                loaded = self._load_minute_for_fills(self.repo, list(symbols), dates, "stock")
+                loaded = self._load_minute_for_fills(self.repo, list(symbols), dates, config.asset_type)
                 minute_cache = {key: value for key, value in loaded.items() if value is not None and len(value) > 0}
 
         def _count(key: str) -> None:
@@ -1591,7 +1617,9 @@ class BacktestEngine:
             total_vol = float(np.nansum(volumes))
             total_amt = float(np.nansum(amounts))
             if total_vol > 0 and total_amt > 0:
-                return total_amt / total_vol
+                # volume 单位是手 (1 手 = 100 股), amount 是元 — 与 scoring/
+                # intraday_features/matrix 的 VWAP 同口径; 缺 x100 会放大 100 倍 (#387)
+                return total_amt / (total_vol * 100.0)
 
         return float(closes[-1]) if np.isfinite(closes[-1]) else None
 
@@ -1767,12 +1795,8 @@ class BacktestEngine:
             trigger_dates = {matrix.timestamp_labels[int(t)][:10] for t in trigger_times}
             trigger_symbols = {matrix.symbols[int(a)] for a in trigger_assets}
             if trigger_dates and trigger_symbols:
-                asset_type = "etf" if all(
-                    symbol.endswith(".SH") and symbol.startswith("5")
-                    for symbol in list(trigger_symbols)[:5]
-                ) else "stock"
                 loaded = self._load_minute_for_fills(
-                    self.repo, list(trigger_symbols), trigger_dates, asset_type,
+                    self.repo, list(trigger_symbols), trigger_dates, config.asset_type,
                 )
                 minute_cache = {key: value for key, value in loaded.items() if value is not None and len(value) > 0}
 

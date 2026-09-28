@@ -21,11 +21,11 @@ def _data_dir(request: Request) -> Path:
 
 
 def _reconcile_index_asset_type(rule: dict, repo) -> dict:
-    """纠正误存为 stock 的指数规则 (asset_type → index)。
+    """纠正误存为 stock 的指数/ETF 规则 (asset_type → index/etf)。
 
-    个股弹窗加监控 / 点位提醒等入口未传 asset_type, 指数 symbol 的规则被存成
-    stock, 导致监控中心显示「个股」、引擎在股票轮评估 (指数 symbol 永不命中)。
-    仅当规则全部 symbols 都 resolve 为指数时纠正 (股票+指数混合池不动)。
+    个股弹窗加监控 / 点位提醒等入口未传 asset_type, 指数/ETF symbol 的规则被存成
+    stock, 导致监控中心显示「个股」、引擎在股票轮评估 (指数/ETF symbol 永不命中)。
+    仅当规则全部 symbols 都 resolve 为同一非 stock 类型时纠正 (混合池不动)。
     """
     if rule.get("asset_type", "stock") != "stock" or rule.get("scope") != "symbols":
         return rule
@@ -33,10 +33,13 @@ def _reconcile_index_asset_type(rule: dict, repo) -> dict:
     if not symbols:
         return rule
     try:
-        if all(repo.resolve_asset_type(s) == "index" for s in symbols):
-            rule["asset_type"] = "index"
-    except Exception:  # noqa: BLE001
-        pass
+        types = {repo.resolve_asset_type(s) for s in symbols}
+    except Exception:
+        return rule
+    if len(types) == 1:
+        only = next(iter(types))
+        if only in ("index", "etf"):
+            rule["asset_type"] = only
     return rule
 
 
@@ -103,7 +106,7 @@ class RuleModel(BaseModel):
     severity: str = "info"    # info | warn | critical
     webhook_url: str = ""     # Webhook 推送地址 (推送到 QMT 等外部软件, 待定)
     webhook_enabled: bool = False  # 兼容老规则 (已由 webhook_channels 取代, 仅做向后兼容读)
-    webhook_channels: list[str] = []  # 命中时推送的外部渠道 (合法值 'feishu' | 'wecom')
+    webhook_channels: list[str] = []  # 合法值: feishu | wecom | custom | email
     message: str = ""
     # abnormal 专属 (异动边缘监控): any | 3d | 10d | 30d
     abnormal_window: str = "any"

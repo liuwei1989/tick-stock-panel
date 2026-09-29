@@ -59,6 +59,38 @@ def test_cockpit_overview_has_zzshare_block():
     assert r["status"] in ("ok", "attention")
 
 
+def test_concept_ext_data_loaded():
+    """概念成分 ext_data/zzshare_concept: config + timeseries parquet 存在。"""
+    d = settings.data_dir / "ext_data" / "zzshare_concept"
+    cfg = d / "config.json"
+    if not cfg.exists():
+        # 无本地数据时跳过 (不强制网络)
+        assert True
+        return
+    import json
+    raw = json.loads(cfg.read_text(encoding="utf-8"))
+    assert raw["mode"] == "timeseries"
+    assert any(f.get("name") == "concept" for f in raw["fields"])
+    files = list((d / "timeseries").glob("*.parquet"))
+    assert files
+    import polars as pl
+    df = pl.read_parquet(files[-1])
+    assert "symbol" in df.columns and "concept" in df.columns
+    assert df.height > 0
+
+
+def test_sentiment_crosscheck_with_regime():
+    """情绪交叉核验: sentiment 有数据时返回最近 5 日与 regime 对照。"""
+    s = zzshare_extra.sentiment_summary(settings.data_dir)
+    if not s["available"]:
+        assert True
+        return
+    rows = s.get("crosscheck") or []
+    assert rows
+    r = rows[-1]
+    assert "date" in r and "sentiment_pct" in r and "limit_up" in r
+
+
 def test_topic_rank_files_are_json():
     """落盘文件: topic_rank/uplimit/lhb 均为合法 JSON 且结构完整。"""
     d = settings.data_dir

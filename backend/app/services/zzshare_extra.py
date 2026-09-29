@@ -224,6 +224,78 @@ def sync_sentiment(data_dir: Path | None = None, days: int = 30,
     return {"days": len(rows), "rows": len(rows)}
 
 
+# ───────────────────────── 概念成分 (主线认证) ─────────────────────────
+
+_EXT_CONCEPT_ID = "zzshare_concept"
+
+
+def sync_concepts(data_dir: Path | None = None, top_n: int = 30,
+                  progress: Progress | None = None) -> dict:
+    """同步最新交易日概念成分 → ext_data/zzshare_concept (timeseries)。
+
+    plates_rank(15概念, TOP N) → plates_stocks 每概念成分 → 展开 (symbol, concept)
+    写入 data/ext_data/zzshare_concept/timeseries/date={date}.parquet,
+    并写 config.json。market_mainline._load_concept_map_df 读最新 date 即可点亮主线认证。
+    """
+
+    d = data_dir or _data_dir()
+    days = list_trade_days(5)
+    latest = days[-1]
+    date1 = f"{latest[:4]}-{latest[4:6]}-{latest[6:]}"
+
+    base = d / "ext_data" / _EXT_CONCEPT_ID
+    cfg_path = base / "config.json"
+    if not cfg_path.exists():
+        cfg = {
+            "id": _EXT_CONCEPT_ID,
+            "label": "zzshare 概念成分",
+            "mode": "timeseries",
+            "fields": [{"name": "symbol", "dtype": "string", "label": "代码"},
+                       {"name": "concept", "dtype": "string", "label": "概念"}],
+            "description": "zzshare plates_rank(概念TOP) + plates_stocks 成分, 主线认证维度",
+            "symbol_map": {"type": "mapped", "col": "symbol"},
+            "code_map": {},
+        }
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=1),
+                            encoding="utf-8")
+
+    rank = _call_shortcut("plates_rank", plate_type=15, date1=date1, limit=top_n) or []
+    rows: list[dict] = []
+    plates_done = 0
+    for p in rank:
+        code = str(p.get("plate_code") or "")
+        name = p.get("plate_name") or code
+        if not code:
+            continue
+        try:
+            stocks = _call_shortcut("plates_stocks", plate_type=15,
+                                    plate_code=code, date=date1) or []
+        except Exception:  # noqa: BLE001
+            stocks = []
+        for s in stocks:
+            sc = str(s.get("stock_code") or "")[-6:]
+            if sc:
+                rows.append({"symbol": sc, "concept": name})
+        plates_done += 1
+        time.sleep(0.8)
+    if not rows:
+        _emit(progress, f"[concepts] {latest} 无成分数据")
+        return {"date": latest, "rows": 0, "plates": 0}
+
+    df = pl.DataFrame(rows).unique()
+    df = df.with_columns(pl.lit(latest).alias("date"))
+    ts_dir = base / "timeseries"
+    ts_dir.mkdir(parents=True, exist_ok=True)
+    df.write_parquet(ts_dir / f"date={latest}.parquet")
+    # 清理旧分区, 保持 timeseries 目录只含最近数据
+    for old in ts_dir.glob("date=*.parquet"):
+        if old.name != f"date={latest}.parquet":
+            old.unlink(missing_ok=True)
+    _emit(progress, f"[concepts] {latest} {len(df)} 行 × {plates_done} 板块 → {_EXT_CONCEPT_ID}")
+    return {"date": latest, "rows": len(df), "plates": plates_done}
+
+
 # ───────────────────────── 驾驶舱摘要 ─────────────────────────
 
 def topics_summary(data_dir: Path) -> dict:
@@ -297,7 +369,7 @@ def lhb_summary(data_dir: Path) -> dict:
 
 
 def sentiment_summary(data_dir: Path) -> dict:
-    """市场情绪 K 线最新值 (供驾驶舱核验 regime)。"""
+    """市场情绪 K 线最新值 + 与 regime 涨停家数的交叉核验。"""
     p = data_dir / "sentiment" / "part.parquet"
     if not p.exists():
         return {"available": False}
@@ -306,12 +378,49 @@ def sentiment_summary(data_dir: Path) -> dict:
         if df.is_empty():
             return {"available": False}
         last = df.tail(1).to_dicts()[0]
-        return {"available": True,
-                "date": str(last.get("date"))[:10],
-                "p_close": last.get("p_close"),
-                "p_open": last.get("p_open")}
+        out = {"available": True,
+               "date": str(last.get("date"))[:10],
+               "p_close": last.get("p_close"),
+               "p_open": last.get("p_open")}
+        cross = _sentiment_regime_crosscheck(data_dir, df)
+        if cross:
+            out["crosscheck"] = cross
+        return out
     except Exception:  # noqa: BLE001
         return {"available": False}
+
+
+def _sentiment_regime_crosscheck(data_dir: Path, sent_df: pl.DataFrame) -> list[dict]:
+    """最近 5 日: 情绪K线涨跌 vs regime 涨停家数/分数, 输出一致性对照。"""
+    try:
+        reg = pl.read_parquet(data_dir / "regime_history" / "part.parquet")
+    except Exception:  # noqa: BLE001
+        return []
+    if reg.is_empty():
+        return []
+    sdf = sent_df.with_columns(pl.col("date").cast(pl.Utf8).str.slice(0, 10).alias("d"))
+    rdf = reg.with_columns(pl.col("date").cast(pl.Utf8).str.slice(0, 10).alias("d"))
+    merged = sdf.join(rdf, on="d", how="inner").sort("d")
+    rows = []
+    prev_close = None
+    for r in merged.tail(5).to_dicts():
+        close = r.get("p_close")
+        chg = None
+        if prev_close is not None and close is not None and prev_close not in (None, 0):
+            try:
+                chg = close / prev_close - 1.0
+            except (TypeError, ZeroDivisionError):
+                chg = None
+        rows.append({
+            "date": r.get("d"),
+            "sentiment_pct": round(chg * 100, 2) if chg is not None else None,
+            "limit_up": r.get("limit_up"),
+            "score": r.get("score"),
+            "phase": r.get("phase"),
+        })
+        if close is not None:
+            prev_close = close
+    return rows
 
 
 def main() -> None:
@@ -322,6 +431,7 @@ def main() -> None:
     parser.add_argument("--uplimit", action="store_true", help="同步涨停复盘")
     parser.add_argument("--lhb", action="store_true", help="同步龙虎榜")
     parser.add_argument("--sentiment", action="store_true", help="同步情绪 K 线")
+    parser.add_argument("--concepts", action="store_true", help="同步概念成分 (主线认证)")
     parser.add_argument("--all", action="store_true", help="全部同步")
     parser.add_argument("--days", type=int, default=5, help="同步最近 N 个交易日 (情绪默认 30)")
     parser.add_argument("--data-dir", type=str, default=None)
@@ -335,6 +445,8 @@ def main() -> None:
         print(f"[sync] {m}", flush=True)
 
     results = {}
+    if args.all or args.concepts:
+        results["concepts"] = sync_concepts(d, progress=_p)
     if args.all or args.topics:
         results["topics"] = sync_topics(d, days=args.days, progress=_p)
     if args.all or args.uplimit:

@@ -179,6 +179,69 @@ def _base_payload(data_dir: Path, trade_date: date_cls, data: dict) -> dict:
     }
 
 
+def _zzshare_auction_fallback(data_dir: Path, trade_date: date_cls | None) -> dict | None:
+    """fuyao 未配置时用 zzshare 涨停竞价名单兜底 (data/uplimit/{date}.json)。
+
+    返回 None 表示无 zzshare 竞价数据 → 前端保持降级提示。
+    """
+    ul_dir = data_dir / "uplimit"
+    if not ul_dir.exists():
+        return None
+    files = sorted(ul_dir.glob("*.json"))
+    if not files:
+        return None
+    path = None
+    if trade_date is not None:
+        cand = ul_dir / f"{trade_date:%Y%m%d}.json"
+        if cand.exists():
+            path = cand
+    if path is None:
+        path = files[-1]
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    day = str(data.get("date") or path.stem)
+    try:
+        actual = date_cls.fromisoformat(f"{day[:4]}-{day[4:6]}-{day[6:]}")
+    except ValueError:
+        return None
+    items = []
+    seen: set[str] = set()
+    for s in data.get("stocks", []):
+        sym = str(s.get("stock_code") or s.get("ts_code") or "")[-6:]
+        if not sym or sym in seen:
+            continue
+        seen.add(sym)
+        # next_open_pct: zzshare 盘后含下一交易日竞价开盘涨幅 (复盘"昨日涨停今日竞价"视角)
+        nxt = s.get("next_open_pct")
+        try:
+            auction_pct = float(nxt) if nxt not in (None, "") else None
+        except (TypeError, ValueError):
+            auction_pct = None
+        items.append({
+            "thscode": sym,
+            "ticker": s.get("stock_code") or s.get("ts_code"),
+            "name": s.get("stock_name") or s.get("name"),
+            "auction_pct": auction_pct,
+            "auction_money": s.get("auction_money"),
+            "tags": ["涨停"],
+        })
+    if not items:
+        return None
+    base = {
+        "state": "ok",
+        "requested_date": actual.isoformat(),
+        "trade_date": str(data.get("date") or actual.isoformat()),
+        "count": len(items),
+        "raw_items": items,
+        "source": "zzshare",
+    }
+    with contextlib.suppress(OSError):
+        _store_cache(_cache_path(data_dir, actual), base)
+    return _respond(data_dir, actual, base, "ok")
+
+
 def get_auction_benchmark(data_dir: Path, target: date_cls | None = None) -> dict:
     """取短线风向标名单 (含当日/次日真实收益)。返回给前端的统一容器。
 
@@ -199,6 +262,9 @@ def get_auction_benchmark(data_dir: Path, target: date_cls | None = None) -> dic
 
     provider = _provider()
     if provider is None:
+        zz = _zzshare_auction_fallback(data_dir, trade_date)
+        if zz is not None:
+            return zz
         return {"state": "source_unavailable"}
 
     from app.plugins.fuyao.client import FuyaoError

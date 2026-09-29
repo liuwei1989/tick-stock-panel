@@ -4,7 +4,7 @@
 """
 from __future__ import annotations
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from app.services.cockpit import cockpit_overview
 
@@ -18,3 +18,13 @@ def _data_dir(request: Request):
 @router.get("/overview")
 def overview(request: Request):
     return cockpit_overview(_data_dir(request))
+
+
+@router.get("/ai-report/{post_id}")
+def ai_report_detail(request: Request, post_id: int):
+    """AI 盘前/收盘报告正文 (zzshare, 带磁盘缓存)。"""
+    from app.services.zzshare_extra import fetch_ai_report_detail
+    try:
+        return fetch_ai_report_detail(post_id, _data_dir(request))
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(502, f"获取 AI 报告正文失败: {e}")

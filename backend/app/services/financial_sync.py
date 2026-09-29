@@ -53,6 +53,86 @@ def _financial_is_custom() -> bool:
     return custom_sources.provider_has_dataset(provider, "financial")
 
 
+def _financial_is_zzshare() -> bool:
+    """财务数据源是否为 zzshare (专用 SDK, 不走 GenericHTTPProvider)。"""
+    from app.services import preferences
+    return preferences.get_financial_provider() == "zzshare"
+
+
+def _zzshare_norm_code(code: Any) -> str:
+    """'000001.SZ' -> '000001'。"""
+    return str(code or "").split(".")[0]
+
+
+# finance_latest 的 table 取值映射
+_ZZ_TABLE_MAP = {
+    "metrics": "indicator",
+    "income": "income",
+    "balance_sheet": "balance",
+    "cash_flow": "cash_flow",
+}
+
+
+def _fetch_zzshare_table(table: str, symbols: list[str]) -> pl.DataFrame:
+    """zzshare 财务接口 -> 标准表 (含 symbol/period_end)。
+
+    财报四表走 finance_latest (全市场最新报告期快照, 按 symbols 过滤);
+    shares 走 finance_valuation (最新交易日股本/市值快照, 非交易日自动回退)。
+    注: 当前只取最新一期, 历史多期可后续用 finance_range 扩展。
+    """
+    from datetime import date, timedelta
+
+    from app.services.zzshare_extra import _call_shortcut
+
+    symset = {str(x) for x in symbols}
+
+    if table == "shares":
+        rows: list[dict] = []
+        today = date.today()
+        data = None
+        for back in range(8):  # 回退找最近有估值的交易日
+            d = (today - timedelta(days=back)).isoformat()
+            r = _call_shortcut("finance_valuation", date_value=d)
+            if r:
+                data = r
+                break
+        if not data:
+            return pl.DataFrame()
+        for row in data:
+            sym = _zzshare_norm_code(row.get("code"))
+            if sym not in symset:
+                continue
+            row = dict(row)
+            row["symbol"] = sym
+            row["period_end"] = row.get("trade_date")
+            # 常见股本字段别名 (万股), 便于下游统一读取
+            if row.get("capitalization") is not None:
+                row["total_share"] = row.get("capitalization")
+            if row.get("circulating_cap") is not None:
+                row["circ_share"] = row.get("circulating_cap")
+            rows.append(row)
+        return pl.DataFrame(rows)
+
+    zz_table = _ZZ_TABLE_MAP.get(table)
+    if zz_table is None:
+        return pl.DataFrame()
+    data = _call_shortcut("finance_latest", table=zz_table)
+    if not data:
+        return pl.DataFrame()
+    rows = []
+    for row in data:
+        sym = _zzshare_norm_code(row.get("code"))
+        if sym not in symset:
+            continue
+        row = dict(row)
+        row["symbol"] = sym
+        row["period_end"] = row.get("statDate")
+        if row.get("pubDate") is not None:
+            row["announce_date"] = row.get("pubDate")
+        rows.append(row)
+    return pl.DataFrame(rows)
+
+
 def _fetch_table(
     table: str,
     symbols: list[str],
@@ -60,6 +140,17 @@ def _fetch_table(
     latest_only: bool = True,
 ) -> pl.DataFrame:
     """通过当前财务数据源拉取一张标准化财务表。"""
+    # zzshare 分流 (绕过 TickFlow Expert 门控, 同 custom)
+    if _financial_is_zzshare():
+        try:
+            df = _fetch_zzshare_table(table, symbols)
+        except Exception as e:  # noqa: BLE001
+            logger.warning("sync_%s zzshare failed: %s", table, e)
+            return pl.DataFrame()
+        if df.is_empty() or "symbol" not in df.columns:
+            return pl.DataFrame()
+        return df
+
     is_custom = _financial_is_custom()
     if not is_custom and not capset.has(Cap.FINANCIAL):
         logger.info("sync_%s skipped: no FINANCIAL capability", table)

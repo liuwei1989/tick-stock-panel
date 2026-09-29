@@ -130,12 +130,109 @@ def sync_topics(data_dir: Path | None = None, days: int = 5,
 
 # ───────────────────────── 涨停复盘 ─────────────────────────
 
-def sync_uplimit(data_dir: Path | None = None, days: int = 5,
-                 progress: Progress | None = None) -> dict:
-    """同步最近 N 个交易日涨停股票列表 (含竞价字段)。
+def _safe_int(v) -> int:
+    try:
+        return int(float(v))
+    except (TypeError, ValueError):
+        return 0
 
-    落盘 data/uplimit/{date}.json: {"date", "stocks": [{ts_code, name,
-    pct_chg, fd_max, first_time, auction_money, ...}]}
+
+def _build_uplimit_day(date1: str) -> dict:
+    """组装单个交易日全量涨停复盘。
+
+    数据源:
+      uplimit_hot        — 连板梯队 ban_info / 最高板 / 板块个股明细 / 题材 / 热点板块
+      review_uplimit_reason_open — 全量封住涨停个股 + 涨停原因(去重)
+    输出: stocks(封住, 含 board/reason/竞价) + broken(触板未封) + ladder + hot_plates
+    """
+    hot = _call_shortcut("uplimit_hot", date1=date1) or {}
+    reason_rows = _call_shortcut("review_uplimit_reason_open", date1=date1) or []
+
+    # 涨停原因按 code 聚合(一只股可能多行)
+    reasons: dict[str, list[str]] = {}
+    name_by_code: dict[str, str] = {}
+    sealed: list[str] = []
+    for r in reason_rows:
+        c = str(r.get("stock_code") or "")[:6]
+        if not c:
+            continue
+        name_by_code[c] = r.get("stock_name") or name_by_code.get(c, "")
+        txt = r.get("reason")
+        if txt:
+            reasons.setdefault(c, [])
+            if txt not in reasons[c]:
+                reasons[c].append(txt)
+        if c not in sealed:
+            sealed.append(c)
+
+    # 个股明细: plate_stocks 跨板块合并(取信息最全)
+    detail: dict[str, dict] = {}
+    for arr in (hot.get("plate_stocks") or {}).values():
+        for st in arr:
+            c = str(st.get("stock_code") or "")[:6]
+            if not c:
+                continue
+            if c not in detail:
+                detail[c] = dict(st)
+            else:
+                for k, v in st.items():
+                    if v and not detail[c].get(k):
+                        detail[c][k] = v
+
+    sinfo = hot.get("stock_info") or {}
+
+    stocks = []
+    for c in sealed:
+        st = detail.get(c, {})
+        board = _safe_int(st.get("up_limit_keep_times")) or _safe_int(st.get("fd_max"))
+        stocks.append({
+            "ts_code": c,
+            "name": st.get("stock_name") or name_by_code.get(c),
+            "board": board,
+            "board_desc": st.get("up_limit_desc"),
+            "first_time": st.get("up_limit_time"),
+            "board_type": st.get("up_limit_type"),
+            "reason": "；".join(reasons.get(c, []))[:600],
+            "plates": (sinfo.get(c) or {}).get("plates", []),
+            "auction_money": st.get("auction_money"),
+            "auction_turnover": st.get("auction_turnover"),
+            "auction_buy": st.get("auction_buy"),
+            "next_open_pct": st.get("next_open_pct"),
+            "fd_close": st.get("fd_close"),
+            "amount": st.get("amount"),
+        })
+    stocks.sort(key=lambda x: -(x["board"] or 0))
+
+    # 触板/炸板: hot stocks 名单中未封住的 (stocks 可能是 list 或逗号分隔字符串)
+    stocks_raw = hot.get("stocks") or []
+    if isinstance(stocks_raw, str):
+        stocks_raw = [x for x in stocks_raw.split(",") if x.strip()]
+    broken = []
+    for raw in stocks_raw:
+        c = str(raw).strip()[:6]
+        if not c or c in sealed:
+            continue
+        st = detail.get(c, {})
+        broken.append({"ts_code": c, "name": st.get("stock_name"),
+                       "plates": (sinfo.get(c) or {}).get("plates", [])})
+
+    ban = hot.get("ban_info") or {}
+    ladder = {str(k): (v.get("count") if isinstance(v, dict) else v)
+              for k, v in ban.items()}
+    hot_plates = [{"name": pl[0], "code": pl[1], "score": pl[2]}
+                  for pl in (hot.get("plate") or []) if len(pl) >= 3][:12]
+    max_consecutive = _safe_int(hot.get("max_count")) or (
+        stocks[0]["board"] if stocks else 0)
+    return {"stocks": stocks, "broken": broken, "ladder": ladder,
+            "max_consecutive": max_consecutive, "hot_plates": hot_plates}
+
+
+def sync_uplimit(data_dir: Path | None = None, days: int = 5,
+                 progress: Progress | None = None, force: bool = False) -> dict:
+    """同步最近 N 个交易日全量涨停复盘 (封住名单+梯队+涨停原因+竞价)。
+
+    落盘 data/uplimit/{date}.json: {"date", "stocks":[封住], "broken":[触板],
+    "ladder":{板数:家数}, "max_consecutive", "hot_plates":[热点板块]}
     """
     d = data_dir or _data_dir()
     out = d / "uplimit"
@@ -144,16 +241,17 @@ def sync_uplimit(data_dir: Path | None = None, days: int = 5,
     written, total = 0, 0
     for day in trade_days:
         day_file = out / f"{day}.json"
-        if day_file.exists():
+        if day_file.exists() and not force:
             continue
         date1 = f"{day[:4]}-{day[4:6]}-{day[6:]}"
-        stocks = _call_shortcut("uplimit_stocks", date1=date1) or []
-        day_file.write_text(json.dumps({"date": day, "stocks": stocks},
+        rec = _build_uplimit_day(date1)
+        day_file.write_text(json.dumps({"date": day, **rec},
                                        ensure_ascii=False, indent=1),
                             encoding="utf-8")
         written += 1
-        total += len(stocks)
-        _emit(progress, f"[uplimit] {day} 涨停 {len(stocks)} 只")
+        total += len(rec["stocks"])
+        _emit(progress, f"[uplimit] {day} 封住{len(rec['stocks'])} "
+                        f"炸板{len(rec['broken'])} 最高{rec['max_consecutive']}板")
         time.sleep(1)
     return {"days": len(trade_days), "written": written, "stocks": total}
 
@@ -227,6 +325,7 @@ def sync_sentiment(data_dir: Path | None = None, days: int = 30,
 # ───────────────────────── 概念成分 (主线认证) ─────────────────────────
 
 _EXT_CONCEPT_ID = "zzshare_concept"
+_EXT_INDUSTRY_ID = "zzshare_industry"
 
 
 def sync_concepts(data_dir: Path | None = None, top_n: int = 30,
@@ -239,9 +338,15 @@ def sync_concepts(data_dir: Path | None = None, top_n: int = 30,
     """
 
     d = data_dir or _data_dir()
-    days = list_trade_days(5)
-    latest = days[-1]
-    date1 = f"{latest[:4]}-{latest[4:6]}-{latest[6:]}"
+    days = list_trade_days(9)
+    latest, date1, rank = None, None, None
+    for _i in range(len(days)):
+        _cand = days[-1 - _i]
+        _d1 = f"{_cand[:4]}-{_cand[4:6]}-{_cand[6:]}"
+        _r = _call_shortcut("plates_rank", plate_type=15, date1=_d1, limit=top_n) or []
+        if _r:
+            latest, date1, rank = _cand, _d1, _r
+            break
 
     base = d / "ext_data" / _EXT_CONCEPT_ID
     cfg_path = base / "config.json"
@@ -260,7 +365,9 @@ def sync_concepts(data_dir: Path | None = None, top_n: int = 30,
         cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=1),
                             encoding="utf-8")
 
-    rank = _call_shortcut("plates_rank", plate_type=15, date1=date1, limit=top_n) or []
+    if not rank:
+        _emit(progress, f"[concepts] 最近交易日无板块排名")
+        return {"date": None, "rows": 0, "plates": 0}
     rows: list[dict] = []
     plates_done = 0
     for p in rank:
@@ -296,6 +403,78 @@ def sync_concepts(data_dir: Path | None = None, top_n: int = 30,
     return {"date": latest, "rows": len(df), "plates": plates_done}
 
 
+def sync_industries(data_dir: Path | None = None, top_n: int = 40,
+                     progress: Progress | None = None) -> dict:
+    """同步最新交易日行业成分 → ext_data/zzshare_industry (timeseries)。
+
+    plates_rank(14行业, TOP N) → plates_stocks 每行业成分 → 展开 (symbol, industry)。
+    与 sync_concepts 同构, 让 market_mainline 的 industry 维度可用。
+    """
+    d = data_dir or _data_dir()
+    days = list_trade_days(9)
+    latest, date1, rank = None, None, None
+    for _i in range(len(days)):
+        _cand = days[-1 - _i]
+        _d1 = f"{_cand[:4]}-{_cand[4:6]}-{_cand[6:]}"
+        _r = _call_shortcut("plates_rank", plate_type=14, date1=_d1, limit=top_n) or []
+        if _r:
+            latest, date1, rank = _cand, _d1, _r
+            break
+
+    base = d / "ext_data" / _EXT_INDUSTRY_ID
+    cfg_path = base / "config.json"
+    if not cfg_path.exists():
+        cfg = {
+            "id": _EXT_INDUSTRY_ID,
+            "label": "zzshare 行业成分",
+            "mode": "timeseries",
+            "fields": [{"name": "symbol", "dtype": "string", "label": "代码"},
+                       {"name": "industry", "dtype": "string", "label": "行业"}],
+            "description": "zzshare plates_rank(行业TOP) + plates_stocks 成分, 主线认证行业维度",
+            "symbol_map": {"type": "mapped", "col": "symbol"},
+            "code_map": {},
+        }
+        cfg_path.parent.mkdir(parents=True, exist_ok=True)
+        cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=1),
+                            encoding="utf-8")
+
+    if not rank:
+        _emit(progress, f"[industries] 最近交易日无板块排名")
+        return {"date": None, "rows": 0, "plates": 0}
+    rows: list[dict] = []
+    plates_done = 0
+    for p in rank:
+        code = str(p.get("plate_code") or "")
+        name = p.get("plate_name") or code
+        if not code:
+            continue
+        try:
+            stocks = _call_shortcut("plates_stocks", plate_type=14,
+                                    plate_code=code, date=date1) or []
+        except Exception:  # noqa: BLE001
+            stocks = []
+        for s in stocks:
+            sc = str(s.get("stock_code") or "")[-6:]
+            if sc:
+                rows.append({"symbol": sc, "industry": name})
+        plates_done += 1
+        time.sleep(0.8)
+    if not rows:
+        _emit(progress, f"[industries] {latest} 无成分数据")
+        return {"date": latest, "rows": 0, "plates": 0}
+
+    df = pl.DataFrame(rows).unique()
+    df = df.with_columns(pl.lit(latest).alias("date"))
+    ts_dir = base / "timeseries"
+    ts_dir.mkdir(parents=True, exist_ok=True)
+    df.write_parquet(ts_dir / f"date={latest}.parquet")
+    for old in ts_dir.glob("date=*.parquet"):
+        if old.name != f"date={latest}.parquet":
+            old.unlink(missing_ok=True)
+    _emit(progress, f"[industries] {latest} {len(df)} 行 × {plates_done} 行业 → {_EXT_INDUSTRY_ID}")
+    return {"date": latest, "rows": len(df), "plates": plates_done}
+
+
 # ───────────────────────── 人气/研报/监管 ─────────────────────────
 
 def sync_hot(data_dir: Path | None = None, days: int = 3,
@@ -309,7 +488,11 @@ def sync_hot(data_dir: Path | None = None, days: int = 3,
     for day in trade_days:
         day_file = out / f"{day}.json"
         if day_file.exists():
-            continue
+            try:
+                if json.loads(day_file.read_text(encoding="utf-8")).get("hot"):
+                    continue
+            except Exception:  # noqa: BLE001
+                pass
         date1 = f"{day[:4]}-{day[4:6]}-{day[6:]}"
         hot = _call_shortcut("ths_hot_top", date1=date1, top_n=20) or []
         day_file.write_text(json.dumps({"date": day, "hot": hot},
@@ -339,6 +522,27 @@ def sync_ai_reports(data_dir: Path | None = None,
     return {"rows": len(items)}
 
 
+def fetch_ai_report_detail(post_id, data_dir: Path | None = None,
+                           force: bool = False,
+                           progress: Progress | None = None) -> dict:
+    """获取单篇 AI 盘前/收盘报告正文 → data/ai_reports/detail_{post_id}.json (缓存)。
+
+    post_id 即列表 item 的 id。已缓存且非 force 直接读盘, 减少重复调用。
+    """
+    d = data_dir or _data_dir()
+    out = d / "ai_reports"
+    out.mkdir(parents=True, exist_ok=True)
+    cache = out / f"detail_{post_id}.json"
+    if cache.exists() and not force:
+        return json.loads(cache.read_text(encoding="utf-8"))
+    raw = _call_shortcut("ai_report_detail", post_id=post_id)
+    payload = raw if isinstance(raw, dict) else {"id": post_id, "detail": raw}
+    cache.write_text(json.dumps(payload, ensure_ascii=False, indent=1),
+                     encoding="utf-8")
+    _emit(progress, f"[ai_report] detail {post_id} 已获取")
+    return payload
+
+
 def sync_movement(data_dir: Path | None = None, days: int = 3,
                   progress: Progress | None = None) -> dict:
     """同步涨幅触发监管预警 → data/movement_alerts/{date}.json。"""
@@ -350,7 +554,11 @@ def sync_movement(data_dir: Path | None = None, days: int = 3,
     for day in trade_days:
         day_file = out / f"{day}.json"
         if day_file.exists():
-            continue
+            try:  # 已有非空记录才跳过; 空文件(盘后数据未就绪时落的)允许重采
+                if json.loads(day_file.read_text(encoding="utf-8")).get("alerts"):
+                    continue
+            except Exception:  # noqa: BLE001
+                pass
         date1 = f"{day[:4]}-{day[4:6]}-{day[6:]}"
         alerts = _call_shortcut("movement_alerts", date1=date1, type=0,
                                 limit=30, is_real=1) or []
@@ -391,24 +599,27 @@ def topics_summary(data_dir: Path) -> dict:
 
 
 def uplimit_summary(data_dir: Path) -> dict:
-    """最新交易日涨停摘要 (含竞价): 家数/最高连板/竞价溢价。"""
+    """最新交易日全量涨停摘要: 封住家数/炸板/梯队/最高连板。"""
     out = data_dir / "uplimit"
-    if not out.exists():
-        return {"available": False, "date": None, "count": 0}
-    files = sorted(out.glob("*.json"))
+    files = sorted(out.glob("*.json")) if out.exists() else []
     if not files:
         return {"available": False, "date": None, "count": 0}
-    latest = files[-1]
-    data = json.loads(latest.read_text(encoding="utf-8"))
+    # 盘前/当日可能空文件, 取最近有封住数据的日
+    data = None
+    for f in reversed(files):
+        cand = json.loads(f.read_text(encoding="utf-8"))
+        if cand.get("stocks"):
+            data = cand
+            break
+    if data is None:
+        data = json.loads(files[-1].read_text(encoding="utf-8"))
     stocks = data.get("stocks", [])
-    max_fd = 0
-    for s in stocks:
-        try:
-            max_fd = max(max_fd, int(s.get("fd_max") or 0))
-        except (TypeError, ValueError):
-            pass
-    return {"available": True, "date": data.get("date"), "count": len(stocks),
-            "max_consecutive": max_fd, "sample": stocks[:5]}
+    return {"available": True, "date": data.get("date"),
+            "count": len(stocks),
+            "broken_count": len(data.get("broken", [])),
+            "max_consecutive": data.get("max_consecutive", 0),
+            "ladder": data.get("ladder", {}),
+            "sample": stocks[:5]}
 
 
 def lhb_summary(data_dir: Path) -> dict:

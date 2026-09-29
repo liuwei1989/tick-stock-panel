@@ -378,6 +378,7 @@ async def analyze_stock_stream(
                                          asset_type=asset_type, paper_positions=paper_positions,
                                          raw_close=raw_close)
         got_content = False
+        collected: list[str] = []
         async for delta in stream_ai_text(
             [
                 {"role": "system", "content": _SYSTEM_PROMPT},
@@ -390,6 +391,7 @@ async def analyze_stock_stream(
             prefer_final_answer=True,
         ):
             got_content = True
+            collected.append(delta)
             yield json.dumps({"type": "delta", "content": delta}, ensure_ascii=False)
 
     except Exception as e:
@@ -402,4 +404,37 @@ async def analyze_stock_stream(
         logger.warning("AI stock analysis ended with empty content for %s", symbol)
         yield json.dumps({"type": "error", "message": "AI 未返回正文(输出被截断), 请重试"}, ensure_ascii=False)
         return
+
+    # 生成即自动归档 (同 symbol 当日去重; 软失败不影响 done)
+    try:
+        from datetime import datetime
+        from app.services import stock_reports
+        today = datetime.now().date().isoformat()
+        exists = any(
+            r.get("symbol") == symbol and str(r.get("created_at", "")).startswith(today)
+            for r in stock_reports.list_reports()
+        )
+        if not exists:
+            nm = ""
+            try:  # 名称从 instruments, 列名自适应
+                inst = pl.read_parquet(data_dir / "instruments" / "instruments.parquet")
+                name_col = next((c for c in inst.columns if c.lower() in ("name", "name_cn", "sec_name", "display_name")), None)
+                bare = str(symbol).split(".")[0]
+                hit = inst.filter(pl.col("symbol").cast(pl.Utf8) == bare)
+                if name_col and not hit.is_empty():
+                    nm = str(hit[name_col][0])
+            except Exception:  # noqa: BLE001
+                nm = ""
+            stock_reports.save_report({
+                "symbol": symbol,
+                "name": nm,
+                "focus": focus,
+                "content": "".join(collected),
+                "summary": summarize_levels(levels, close),
+                "close": close,
+                "levels": levels,
+            })
+    except Exception:  # noqa: BLE001
+        logger.exception("auto-archive stock analysis failed for %s", symbol)
+
     yield json.dumps({"type": "done"}, ensure_ascii=False)

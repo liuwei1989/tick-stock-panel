@@ -279,30 +279,75 @@ def _existing_daily_dates(data_dir: Path) -> set[str]:
     return dates
 
 
-def _resolve_minute_pool(data_dir: Path, pool: str) -> list[str]:
-    """分钟回填股票池: limitup=最新交易日涨停/连板股; all=最新交易日全市场。"""
+def _resolve_minute_pool(data_dir: Path, pool: str, trade_days: list[str] | None = None) -> list[str]:
+    """分钟回填股票池。
+
+    - limitup: 最新交易日涨停/连板股 (窄, 旧默认)
+    - active:  最近若干交易日「涨停/连板 + 大涨>=7% + 高换手 + 当日成交额TOP150」并集,
+               去重后按累计成交额排序, 上限 400 只 (短线核心活跃池, 推荐)
+    - all:     最新交易日全市场 (5000+, stk_mins 单股粒度, 仅建议小天数)
+    """
     enriched_dir = data_dir / "kline_daily_enriched"
     dates = sorted(part.parent.name.replace("date=", "") for part in enriched_dir.glob("date=*/part.parquet"))
     if not dates:
         return []
     latest = dates[-1]
-    df = pl.read_parquet(enriched_dir / f"date={latest}" / "part.parquet")
-    syms = df["symbol"].cast(pl.Utf8).unique().to_list()
+    latest_df = pl.read_parquet(enriched_dir / f"date={latest}" / "part.parquet")
+    all_syms = latest_df["symbol"].cast(pl.Utf8).unique().to_list()
+
+    if pool == "all":
+        return sorted(all_syms)
+
     if pool == "limitup":
-        if "consecutive_limit_ups" not in df.columns:
-            return sorted(syms)[:500]
-        up = df.filter(pl.col("consecutive_limit_ups").fill_null(0) >= 1)
+        if "consecutive_limit_ups" not in latest_df.columns:
+            return sorted(all_syms)[:500]
+        up = latest_df.filter(pl.col("consecutive_limit_ups").fill_null(0) >= 1)
         if up.is_empty():
-            return sorted(syms)[:500]
+            return sorted(all_syms)[:500]
         return sorted(up["symbol"].cast(pl.Utf8).unique().to_list())
-    return sorted(syms)
+
+    # active: 最近交易日 (默认近 6 个) 并集
+    use_dates = trade_days or dates[-6:]
+    frames = []
+    for dt in use_dates:
+        f = enriched_dir / f"date={dt}" / "part.parquet"
+        if f.exists():
+            frames.append(pl.read_parquet(f, columns=[
+                "symbol", "date", "raw_close", "amount", "turnover_rate", "consecutive_limit_ups",
+            ]))
+    if not frames:
+        return sorted(all_syms)[:400]
+    hist = pl.concat(frames, how="diagonal_relaxed").sort(["symbol", "date"])
+    hist = hist.with_columns(
+        pl.col("raw_close").pct_change().over("symbol").alias("pct"),
+    )
+    # 每日成交额 TOP 150
+    top_amt = (
+        hist.sort("amount", descending=True).group_by("date").head(150)["symbol"]
+        .cast(pl.Utf8).unique().to_list()
+    )
+    # 换手率单位自适应 (百分数 8.0 vs 小数 0.08)
+    med_turn = hist["turnover_rate"].drop_nulls().median() if hist["turnover_rate"].drop_nulls().len() else 0
+    thr_turn = 8.0 if (med_turn or 0) > 1 else 0.08
+    sel = hist.filter(
+        (pl.col("consecutive_limit_ups").fill_null(0) >= 1)
+        | (pl.col("pct") >= 0.07)
+        | (pl.col("turnover_rate") >= thr_turn)
+        | (pl.col("symbol").cast(pl.Utf8).is_in(top_amt))
+    )
+    chosen = set(sel["symbol"].cast(pl.Utf8).unique().to_list())
+    if not chosen:
+        return sorted(all_syms)[:400]
+    rank = hist.group_by("symbol").agg(pl.col("amount").sum().alias("amt")).sort("amt", descending=True)
+    ordered = [str(x) for x in rank["symbol"].cast(pl.Utf8).to_list() if str(x) in chosen]
+    return ordered[:400]
 
 
 def sync_minute(
     days: int = 10,
     *,
     data_dir: Path | None = None,
-    pool: str = "limitup",
+    pool: str = "active",
     symbols: list[str] | None = None,
     freq: str = "1m",
     workers: int = 4,
@@ -330,7 +375,7 @@ def sync_minute(
     _emit(progress, f"分钟回填交易日 {len(trade_days)} 天 ({trade_days[0]}~{trade_days[-1]})")
 
     # 股票池
-    syms = list(symbols) if symbols else _resolve_minute_pool(d, pool)
+    syms = list(symbols) if symbols else _resolve_minute_pool(d, pool, trade_days)
     if not syms:
         raise RuntimeError("分钟股票池为空 (enriched 无数据; 可用 --symbols 指定)")
     _emit(progress, f"分钟股票池 {len(syms)} 只 (pool={pool})")

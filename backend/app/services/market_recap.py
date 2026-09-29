@@ -328,6 +328,7 @@ async def recap_market_stream(
         bench_ctx = auction_benchmark_svc.build_recap_context(repo.store.data_dir)
         user_prompt = _build_user_prompt(overview, news or [], focus, lhb_ctx, bench_ctx)
         got_content = False
+        collected: list[str] = []
         async for delta in stream_ai_text(
             [
                 {"role": "system", "content": _SYSTEM_PROMPT},
@@ -339,6 +340,7 @@ async def recap_market_stream(
             prefer_final_answer=True,
         ):
             got_content = True
+            collected.append(delta)
             yield json.dumps({"type": "delta", "content": delta}, ensure_ascii=False)
 
     except Exception as e:  # noqa: BLE001
@@ -350,6 +352,23 @@ async def recap_market_stream(
         logger.warning("AI market recap ended with empty content for %s", as_of_str)
         yield json.dumps({"type": "error", "message": "AI 未返回正文(输出被截断), 请重试"}, ensure_ascii=False)
         return
+
+    # 生成即自动归档 (按 as_of 去重; 软失败不影响 done)
+    try:
+        from app.services import market_recap_reports
+        existing = {r.get("as_of") for r in market_recap_reports.list_reports()}
+        if as_of_str not in existing:
+            market_recap_reports.save_report({
+                "as_of": as_of_str,
+                "focus": focus,
+                "content": "".join(collected),
+                "summary": _recap_summary(overview),
+                "emotion_score": emo.get("score", 50),
+                "emotion_label": emo.get("label", ""),
+            })
+    except Exception:  # noqa: BLE001
+        logger.exception("auto-archive market recap failed for %s", as_of_str)
+
     yield json.dumps({"type": "done"}, ensure_ascii=False)
 
 

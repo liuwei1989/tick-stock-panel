@@ -173,6 +173,21 @@ def _resolve_universe(capset: CapabilitySet, repo=None) -> list[str]:
     return sorted(base)
 
 
+def run_premarket_report(repo: KlineRepository) -> dict:
+    """盘前自动生成规则版结构化研报并归档 (每交易日一份, 当日覆盖)。
+
+    规则版零外部依赖 (基于最近收盘的主线/环境/计划); AI 版由用户在页面手动生成。
+    """
+    from app.services import premarket_report as pr
+
+    d = repo.store.data_dir
+    structured = pr.build_structured(d)  # as_of 默认今日
+    if not structured.get("available"):
+        return {"ok": False, "reason": structured.get("summary")}
+    pr.save_report(d, structured)
+    return {"ok": True, "as_of": structured.get("as_of")}
+
+
 def run_instruments_sync(repo: KlineRepository) -> dict:
     """盘前同步个股维表。
 
@@ -760,6 +775,24 @@ def run_now(
         stage_errors.append(f"sync_uplimit_reason: {e}")
         skipped.append("uplimit_reason")
 
+    # Step 2.78: zzshare 扩展数据每日自动同步
+    #   题材/全量涨停/龙虎榜/情绪/概念成分/热搜/AI报告/监管, 随盘后管道刷新驾驶舱。
+    #   软失败: token 未配置/限流只 warn, 不阻断主管道; 各 sync 幂等(当日文件已存在则跳过)。
+    try:
+        emit("sync_zzshare", 94, "同步 zzshare 题材/涨停/龙虎榜/情绪…")
+        zz_result = _sync_zzshare_extra(repo)
+        emit("sync_zzshare", 94, "zzshare 扩展数据同步完成")
+        logger.info("sync_zzshare_extra: %s", zz_result)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("sync_zzshare_extra failed (soft, 不影响主管道): %s", e)
+
+    # Step 2.79: 盘后选股缓存 (全部日线策略, 供页面秒加载)
+    try:
+        sc = run_screener_cache(repo, on_progress=emit)
+        logger.info("screener_cache: %s", sc)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("screener_cache failed (soft): %s", e)
+
     # Step 2.8: 模拟盘结算: 顺延单按当日开盘/收盘撮合 → 除权调整 → 定版净值。
     # 幂等: 重跑同日不会重复成交/二次除权 (订单状态与 corp_action 台账守卫)。
     # 必须在日K/除权同步之后, 才能读到当日 raw OHLC 与因子。核心账务不受
@@ -930,6 +963,91 @@ def _push_phase_change_alert(data_dir) -> None:
             "severity": severity,
         }])
     logger.info("phase change alert: %s (severity=%s)", msg, severity)
+
+
+def _sync_zzshare_extra(repo) -> dict:
+    """盘后同步 zzshare 扩展数据 (驾驶舱七区块 + 概念成分)。
+
+    顺序: 概念成分先跑 (主线认证依赖), 其余按区块; 各 sync 幂等, 当日文件已存在则跳过。
+    """
+    from app.services import zzshare_extra as zz
+
+    d = repo.store.data_dir
+
+    def _p(m: str) -> None:
+        logger.info("zzshare_auto: %s", m)
+
+    out: dict = {}
+    out["concepts"] = zz.sync_concepts(d, progress=_p)
+    out["industries"] = zz.sync_industries(d, progress=_p)
+    out["topics"] = zz.sync_topics(d, days=5, progress=_p)
+    out["uplimit"] = zz.sync_uplimit(d, days=5, progress=_p)
+    out["lhb"] = zz.sync_lhb(d, days=5, progress=_p)
+    out["sentiment"] = zz.sync_sentiment(d, progress=_p)
+    out["hot"] = zz.sync_hot(d, days=5, progress=_p)
+    out["ai_reports"] = zz.sync_ai_reports(d, progress=_p)
+    out["movement"] = zz.sync_movement(d, days=5, progress=_p)
+    # 当日分钟 K (active 活跃池 ~400 只), 盘后增量; 软失败
+    try:
+        from app.services import zzshare_sync
+        out["minute"] = zzshare_sync.sync_minute(days=1, data_dir=d, pool="active", progress=None)
+    except Exception as e:  # noqa: BLE001
+        logger.warning("zzshare minute auto-sync failed (soft): %s", e)
+        out["minute"] = {"error": str(e)[:120]}
+    return out
+
+
+def run_screener_cache(repo, on_progress=None) -> dict:
+    """盘后对全部启用的日线(stock)策略跑一次选股并写 strategy_cache。
+
+    让 /api/screener/cached-summary 当日即有 as_of, 页面秒加载; 软失败。
+    """
+    from app.services.screener import ScreenerService
+    from app.services import strategy_cache, strategy_config
+
+    emit = on_progress or _noop
+    app_state = _get_app_state()
+    engine = getattr(app_state, "strategy_engine", None)
+    if engine is None:
+        return {"ok": False, "reason": "strategy_engine 未初始化"}
+
+    svc = ScreenerService(repo, asset_type="stock")
+    as_of = svc.latest_date()
+    if not as_of:
+        return {"ok": False, "reason": "无日线数据"}
+
+    all_ids = [
+        m["id"] for m in engine.list_strategies()
+        if not m.get("research_only")
+        and "stock" in m.get("asset_types", ["stock"])
+        and "1d" in m.get("timeframes", ["1d"])
+    ]
+    if not all_ids:
+        return {"ok": False, "reason": "无可用策略"}
+
+    data_dir = repo.store.data_dir
+    overrides = strategy_config.list_overrides(data_dir)
+    params_map = {sid: dict((overrides.get(sid) or {}).get("params") or {}) for sid in all_ids}
+    overrides_map = {sid: overrides.get(sid, {}) for sid in all_ids}
+
+    emit("screener_cache", 96, f"盘后选股 {len(all_ids)} 个策略…")
+    context = svc.build_strategy_context(
+        engine, as_of, all_ids, timeframe="1d",
+        params_map=params_map, overrides_map=overrides_map,
+    )
+    engine_results = engine.run_all(
+        context, params_map=params_map, overrides_map=overrides_map, strategy_ids=all_ids,
+    )
+    from dataclasses import asdict
+    from app.api.screener import _safe
+    results: dict = {}
+    for sid, result in engine_results.items():
+        safe_rows = _safe(asdict(result)).get("rows", [])
+        results[sid] = {"total": result.total, "as_of": str(as_of), "rows": safe_rows}
+    if results:
+        strategy_cache.write_cache(data_dir, str(as_of), results)
+    emit("screener_cache", 98, f"选股缓存已写入 {len(results)} 个策略")
+    return {"ok": True, "as_of": str(as_of), "strategies": len(results)}
 
 
 def _run_tracked(fn, job_label: str) -> bool:
@@ -1245,6 +1363,27 @@ def start_scheduler(repo: KlineRepository, capset: CapabilitySet) -> AsyncIOSche
         misfire_grace_time=1800,
         replace_existing=True,
     )
+
+    # 盘前研报: 工作日 08:50 自动生成并归档 (默认开; premarket_auto_enabled=False 可关)
+    def _premarket_task(on_progress=None):
+        emit = on_progress or _noop
+        emit("premarket_report", 0, "生成盘前结构化研报…")
+        result = run_premarket_report(repo)
+        if result.get("ok"):
+            emit("done", 100, f"盘前研报已归档 ({result.get('as_of')})")
+        else:
+            emit("done", 100, result.get("reason", "盘前研报素材不足"))
+        return result
+
+    if bool(preferences.load().get("premarket_auto_enabled", True)):
+        scheduler.add_job(
+            lambda: _run_tracked(_premarket_task, "premarket_report"),
+            trigger=CronTrigger(day_of_week="mon-fri", hour=8, minute=50,
+                                timezone="Asia/Shanghai"),
+            id="pre_market_report",
+            misfire_grace_time=3600,
+            replace_existing=True,
+        )
 
     # 盘后: 日 K + enriched（时间由偏好决定）
     def _pipeline_then_refresh(on_progress=None):

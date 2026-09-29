@@ -15,9 +15,9 @@ from pathlib import Path
 
 import polars as pl
 
+from app.services import workflow as wf
 from app.services.market_mainline import load_mainline_history
 from app.services.regime_builder import load_regime_history
-from app.services import workflow as wf
 
 logger = logging.getLogger(__name__)
 
@@ -41,8 +41,25 @@ def _partition_stats(path: Path) -> dict:
     return {"exists": True, "partitions": 0, "latest": None}
 
 
-def data_health(data_dir: Path) -> dict:
-    """链路各层健康: 日线 → 富化 → 环境 → 主线 → 计划 → 复盘。"""
+# zzshare 实时模块: 数据来自实时接口, 不落内部 parquet 表, 以 *_summary().available 判定健康
+_ZZSHARE_LAYER_KEYS: dict[str, str] = {
+    "topic_rank": "topics",
+    "uplimit": "uplimit",
+    "lhb": "lhb",
+    "sentiment": "sentiment",
+    "ths_hot": "hot",
+    "ai_reports": "ai_reports",
+    "movement_alerts": "movement",
+}
+
+
+def data_health(data_dir: Path, zz_summary: dict | None = None) -> dict:
+    """链路各层健康: 日线 → 富化 → 环境 → 主线 → 计划 → 复盘 + zzshare 实时模块。
+
+    zz_summary: 已计算的 zzshare 扩展摘要 (cockpit_overview 传入复用); 缺省时自算。
+    """
+    if zz_summary is None:
+        zz_summary = _zzshare_summary(data_dir)
     base = data_dir
     layers: list[dict] = []
     specs = [
@@ -62,7 +79,16 @@ def data_health(data_dir: Path) -> dict:
         ("movement_alerts", "监管预警", base / "movement_alerts"),
     ]
     for key, label, path in specs:
-        if path.is_dir():
+        if key in _ZZSHARE_LAYER_KEYS:
+            sub = zz_summary.get(_ZZSHARE_LAYER_KEYS[key]) or {}
+            avail = bool(sub.get("available"))
+            st = {
+                "exists": avail,
+                "partitions": 1 if avail else 0,
+                "latest": sub.get("date"),
+                "source": "zzshare",
+            }
+        elif path.is_dir():
             st = _partition_stats(path)
         else:
             st = {"exists": path.exists(), "partitions": 1 if path.exists() else 0,
@@ -71,8 +97,8 @@ def data_health(data_dir: Path) -> dict:
         layers.append(st)
 
     # 富化是否落后日线
-    daily = next((l for l in layers if l["key"] == "kline_daily"), {})
-    rich = next((l for l in layers if l["key"] == "kline_daily_enriched"), {})
+    daily = next((lyr for lyr in layers if lyr["key"] == "kline_daily"), {})
+    rich = next((lyr for lyr in layers if lyr["key"] == "kline_daily_enriched"), {})
     behind = bool(rich.get("partitions") and daily.get("latest") and
                   rich.get("latest") and rich["latest"] < daily["latest"])
     return {"layers": layers, "enriched_behind_daily": behind}
@@ -99,7 +125,6 @@ def mainline_certification(data_dir: Path, top: int = _TOP_MAINLINE) -> dict:
     for member, rows in by_member.items():
         rows.sort(key=lambda r: r["date"])
         scores = [float(r["score"]) for r in rows]
-        ranks = [int(r["rank"]) for r in rows]
         dates = [str(r["date"]) for r in rows]
         # 连续上榜天数 (按日期顺序, 允许中间缺一天)
         streak = 1
@@ -151,7 +176,7 @@ def mainline_certification(data_dir: Path, top: int = _TOP_MAINLINE) -> dict:
 
 def _alerts(health: dict, mainline: dict, regime: dict, wf_overview: dict) -> list[dict]:
     out: list[dict] = []
-    layers = {l["key"]: l for l in health["layers"]}
+    layers = {lyr["key"]: lyr for lyr in health["layers"]}
 
     daily = layers.get("kline_daily", {})
     rich = layers.get("kline_daily_enriched", {})
@@ -195,11 +220,11 @@ def _alerts(health: dict, mainline: dict, regime: dict, wf_overview: dict) -> li
 
 def cockpit_overview(data_dir: Path) -> dict:
     """驾驶舱总览: 环境 + 数据健康 + 主线认证 + 工作流 + 提醒 + zzshare 扩展。"""
-    health = data_health(data_dir)
+    zz = _zzshare_summary(data_dir)
+    health = data_health(data_dir, zz_summary=zz)
     mainline = mainline_certification(data_dir)
     regime = _regime_summary(data_dir)
     wf_overview = _safe_wf_overview(data_dir)
-    zz = _zzshare_summary(data_dir)
     alerts = _alerts(health, mainline, regime, wf_overview)
     return {
         "as_of": date.today().isoformat(),
@@ -243,7 +268,7 @@ def _regime_summary(data_dir: Path) -> dict:
             "phase": row.get("phase"),
             "phase_label": row.get("phase_label"),
         }
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.warning("cockpit regime read failed: %s", e)
         return {"available": False, "detail": f"regime 读取失败: {e}"}
 
@@ -251,6 +276,6 @@ def _regime_summary(data_dir: Path) -> dict:
 def _safe_wf_overview(data_dir: Path) -> dict:
     try:
         return wf.workflow_overview(data_dir) or {}
-    except Exception as e:  # noqa: BLE001
+    except Exception as e:
         logger.warning("cockpit workflow overview failed: %s", e)
         return {}

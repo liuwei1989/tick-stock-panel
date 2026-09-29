@@ -186,6 +186,15 @@ def generate_plan(
         repo = KlineRepository(DataStore(data_dir=data_dir))
     svc = ScreenerService(repo, asset_type="stock")
     as_of = trade_date or svc.latest_date()
+    # trade_date 来自 API 是字符串(YYYY-MM-DD); 下游 build_strategy_context →
+    # get_enriched_history 会做 target_date - timedelta 运算, 字符串会抛
+    # "unsupported operand type(s) for -: 'str' and 'datetime.timedelta'"。
+    # 统一在此归一为 date, 与 svc.latest_date() 返回类型保持一致。
+    if isinstance(as_of, str):
+        try:
+            as_of = date_cls.fromisoformat(as_of)
+        except ValueError:
+            return {"ok": False, "error": f"无效交易日 {as_of!r}"}
     if not as_of:
         return {"ok": False, "error": "无可用行情数据日期, 请先同步/运行盘后管道"}
 

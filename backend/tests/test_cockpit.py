@@ -79,6 +79,33 @@ def test_data_health_partitions(tmp_path):
     assert health["enriched_behind_daily"] is False
 
 
+def test_freshness_storage_forms(tmp_path):
+    """三种落盘形态都要解析出真实日期, 不得把健康的层误判为 missing。
+
+    生产实测: 只按 `date=` 分区名取最新, 会把 plans/reviews (文件名带日期) 与
+    regime_history/mainline_history (平铺 part.parquet) 全部标成 missing。
+    """
+    _mkdirs(tmp_path)
+    (tmp_path / "regime_history").mkdir(parents=True, exist_ok=True)
+    (tmp_path / "plans" / "P20260928-001.json").write_text("{}", encoding="utf-8")
+    (tmp_path / "reviews" / "R20260928-001.json").write_text("{}", encoding="utf-8")
+    pl.DataFrame([{"date": "2026-09-25", "score": 70.0},
+                  {"date": "2026-09-28", "score": 72.0}]).write_parquet(
+        tmp_path / "regime_history" / "part.parquet")
+
+    health = data_health(tmp_path, as_of=date(2026, 9, 29))  # 周二, 上一交易日 = 09-28
+    plans = _layer(health, "plans")
+    assert plans["latest"] == "2026-09-28"                   # 文件名内嵌日期
+    assert plans["freshness_basis"] == "filename"
+    assert plans["freshness"] == {"status": "fresh", "lag_days": 1}
+    assert _layer(health, "reviews")["latest"] == "2026-09-28"
+
+    regime = _layer(health, "regime_history")
+    assert regime["latest"] == "2026-09-28"                  # 读 date 列 max, 而非 part.parquet
+    assert regime["freshness_basis"] == "column:date"
+    assert regime["freshness"]["status"] == "fresh"          # daily 容忍 T+1
+
+
 def test_mainline_gold_certification(tmp_path):
     _mkdirs(tmp_path)
     _seed_mainline(tmp_path)

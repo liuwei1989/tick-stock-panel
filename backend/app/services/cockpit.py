@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import logging
+import re
 from datetime import date, datetime, timedelta
 from datetime import time as dt_time
 from pathlib import Path
@@ -40,15 +41,61 @@ ACTION_EVOLUTION = "evolution_run"          # 运行进化扫描
 
 # ───────────────────────── 数据健康 ─────────────────────────
 
-def _partition_stats(path: Path) -> dict:
-    """某目录下的 date= 分区统计; 平铺 part.parquet (regime/mainline) 记为 1 份。"""
+_DATE_IN_NAME = re.compile(r"(20\d{2})[-_]?(\d{2})[-_]?(\d{2})")
+
+
+def _date_from_name(name: str) -> date | None:
+    """从文件名里抠日期: P20260928-001.json / 20260928.json / date=2026-09-28。"""
+    m = _DATE_IN_NAME.search(name)
+    if not m:
+        return None
+    try:
+        return date(int(m.group(1)), int(m.group(2)), int(m.group(3)))
+    except ValueError:
+        return None
+
+
+def _parquet_max_date(file: Path, column: str) -> date | None:
+    """平铺单文件表的真实数据日期 (取该列 max)。读失败 (并发写/缺列) 返回 None。"""
+    try:
+        value = pl.scan_parquet(file).select(pl.col(column).max()).collect().item()
+    except Exception:  # 读不到就退化为 mtime, 不让健康度整体报错
+        return None
+    return _parse_date(value)
+
+
+def _partition_stats(path: Path, date_column: str | None = None) -> dict:
+    """某数据目录的「最新数据日期」, 覆盖三种落盘形态:
+
+    1. `date=YYYY-MM-DD` 分区目录 (kline_daily / kline_minute …) → 取最大分区名
+    2. 文件名内嵌日期 (plans/P20260928-001.json、reviews/R*.json、topic_rank/20260928.json)
+    3. 平铺单文件表 (regime_history / mainline_history 的 part.parquet):
+       传 date_column 时读该列 max 得真实数据日期, 否则退化为文件 mtime
+
+    只按目录分区名判断会把形态 2/3 全判成「缺失」, 因此这里统一解析出真实日期,
+    并在 freshness_basis 里标明依据 (filename / column:date / mtime) 便于排查。
+    """
     if not path.exists():
         return {"exists": False, "partitions": 0, "latest": None}
     dates = sorted(d.name.split("=", 1)[1] for d in path.glob("date=*"))
     if dates:
         return {"exists": True, "partitions": len(dates), "latest": dates[-1]}
-    if (path / "part.parquet").exists():
-        return {"exists": True, "partitions": 1, "latest": "part.parquet"}
+    files = [f for f in path.iterdir() if f.is_file() and not f.name.endswith(".bak")]
+    named = [d for d in (_date_from_name(f.name) for f in files) if d]
+    if named:
+        return {"exists": True, "partitions": len(files),
+                "latest": max(named).isoformat(), "freshness_basis": "filename"}
+    flat = path / "part.parquet"
+    if flat.exists():
+        real = _parquet_max_date(flat, date_column) if date_column else None
+        if real is not None:
+            return {"exists": True, "partitions": 1, "latest": real.isoformat(),
+                    "freshness_basis": f"column:{date_column}"}
+        if files:
+            mtime = max(f.stat().st_mtime for f in files)
+            return {"exists": True, "partitions": len(files),
+                    "latest": datetime.fromtimestamp(mtime).date().isoformat(),
+                    "freshness_basis": "mtime"}
     return {"exists": True, "partitions": 0, "latest": None}
 
 
@@ -147,22 +194,22 @@ def data_health(data_dir: Path, zz_summary: dict | None = None,
     base = data_dir
     layers: list[dict] = []
     specs = [
-        ("kline_daily", "日线行情", base / "kline_daily"),
-        ("kline_daily_enriched", "富化行情", base / "kline_daily_enriched"),
-        ("kline_minute", "分钟行情", base / "kline_minute"),
-        ("regime_history", "环境分", base / "regime_history"),
-        ("mainline_history", "主线时序", base / "mainline_history"),
-        ("plans", "盘前计划", base / "plans"),
-        ("reviews", "复盘记录", base / "reviews"),
-        ("topic_rank", "题材热度", base / "topic_rank"),
-        ("uplimit", "涨停复盘", base / "uplimit"),
-        ("lhb", "龙虎榜", base / "lhb"),
-        ("sentiment", "情绪K线", base / "sentiment"),
-        ("ths_hot", "人气热搜", base / "ths_hot"),
-        ("ai_reports", "AI研报", base / "ai_reports"),
-        ("movement_alerts", "监管预警", base / "movement_alerts"),
+        ("kline_daily", "日线行情", base / "kline_daily", None),
+        ("kline_daily_enriched", "富化行情", base / "kline_daily_enriched", None),
+        ("kline_minute", "分钟行情", base / "kline_minute", None),
+        ("regime_history", "环境分", base / "regime_history", "date"),
+        ("mainline_history", "主线时序", base / "mainline_history", "date"),
+        ("plans", "盘前计划", base / "plans", None),
+        ("reviews", "复盘记录", base / "reviews", None),
+        ("topic_rank", "题材热度", base / "topic_rank", None),
+        ("uplimit", "涨停复盘", base / "uplimit", None),
+        ("lhb", "龙虎榜", base / "lhb", None),
+        ("sentiment", "情绪K线", base / "sentiment", None),
+        ("ths_hot", "人气热搜", base / "ths_hot", None),
+        ("ai_reports", "AI研报", base / "ai_reports", None),
+        ("movement_alerts", "监管预警", base / "movement_alerts", None),
     ]
-    for key, label, path in specs:
+    for key, label, path, date_column in specs:
         gran = _LAYER_GRANULARITY.get(key, "daily")
         if key in _ZZSHARE_LAYER_KEYS:
             sub = zz_summary.get(_ZZSHARE_LAYER_KEYS[key]) or {}
@@ -174,7 +221,7 @@ def data_health(data_dir: Path, zz_summary: dict | None = None,
                 "source": "zzshare",
             }
         elif path.is_dir():
-            st = _partition_stats(path)
+            st = _partition_stats(path, date_column=date_column)
         else:
             st = {"exists": path.exists(), "partitions": 1 if path.exists() else 0,
                   "latest": None}

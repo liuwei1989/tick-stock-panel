@@ -2405,6 +2405,8 @@ export interface CockpitHealthLayer {
   exists: boolean
   partitions: number
   latest: string | null
+  source?: string
+  freshness: { status: 'fresh' | 'stale' | 'missing'; lag_days: number | null }
 }
 export interface CockpitMainlineItem {
   member: string
@@ -2444,7 +2446,33 @@ export interface CockpitOverview {
     phase_label?: string
   }
   workflow: WorkflowOverview
-  alerts: { level: 'error' | 'warn' | 'info'; title: string; detail: string }[]
+  session: CockpitSession
+  alerts: CockpitAlert[]
+}
+
+// ===== 驾驶舱提醒 (带可执行处理动作) =====
+export interface CockpitAlert {
+  level: 'error' | 'warn' | 'info'
+  title: string
+  detail: string
+  action?: string
+  action_label?: string
+  action_payload?: Record<string, unknown>
+}
+
+// ===== 驾驶舱交易节点时间线 =====
+export interface CockpitSessionNode {
+  key: string
+  label: string
+  window: string
+  state: 'done' | 'active' | 'pending'
+  data_ready: boolean | null
+}
+export interface CockpitSession {
+  as_of_time: string
+  trading_day: boolean
+  current: string
+  nodes: CockpitSessionNode[]
 }
 
 // ===== 盘前结构化研报 =====

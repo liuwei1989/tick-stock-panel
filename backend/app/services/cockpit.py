@@ -10,7 +10,8 @@
 from __future__ import annotations
 
 import logging
-from datetime import date
+from datetime import date, datetime, timedelta
+from datetime import time as dt_time
 from pathlib import Path
 
 import polars as pl
@@ -25,6 +26,16 @@ _TOP_MAINLINE = 8          # 主线认证候选数
 _MIN_AVG_SCORE_GOLD = 60.0  # 金牌主升的 5 日均强度门槛
 _MIN_STREAK_GOLD = 3        # 金牌主升需连续上榜天数
 _MIN_STREAK_UP = 2          # 主升需连续上榜天数
+
+# 提醒对应的可执行处理动作 (前端按 key 派发到既有端点; 后端只声明"能做什么")
+ACTION_PIPELINE = "pipeline"                # 运行盘后管道 (日线→富化→环境→主线→zzshare 实时)
+ACTION_REBUILD_ENRICHED = "rebuild_enriched"  # 重建富化行情
+ACTION_SYNC_MINUTE = "sync_minute"          # 同步分钟行情
+ACTION_REGIME = "regime_recompute"          # 重建环境分
+ACTION_MAINLINE = "mainline_recompute"      # 重算主线时序
+ACTION_GENERATE_PLAN = "generate_plan"      # 生成盘前计划
+ACTION_REVIEW_PLAN = "review_plan"          # 运行复盘
+ACTION_EVOLUTION = "evolution_run"          # 运行进化扫描
 
 
 # ───────────────────────── 数据健康 ─────────────────────────
@@ -41,6 +52,58 @@ def _partition_stats(path: Path) -> dict:
     return {"exists": True, "partitions": 0, "latest": None}
 
 
+# ───────────────────────── 新鲜度判据 ─────────────────────────
+# 各数据层"应有多新"取决于粒度:
+#  - realtime: 盘中/实时数据 (分钟行情, zzshare 实时模块) 必须在最新交易日当天
+#  - daily:    日频数据 (日线/富化/环境/主线/计划/复盘) 容忍 T+1 (上一交易日)
+# 周末/节假日用周几近似兜底 (与 trading_day 探针的 fallback 一致), 不在驾驶舱触发网络探测。
+
+def _is_trading_day_heuristic(d: date) -> bool:
+    return d.weekday() < 5
+
+
+def _prev_trading_day(d: date) -> date:
+    cur = d
+    while True:
+        cur -= timedelta(days=1)
+        if cur.weekday() < 5:
+            return cur
+
+
+def _parse_date(value) -> date | None:
+    if not value:
+        return None
+    try:
+        return date.fromisoformat(str(value)[:10])
+    except (ValueError, TypeError):
+        return None
+
+
+def _freshness(latest, as_of: date, granularity: str) -> dict:
+    """返回 {"status": "fresh"|"stale"|"missing", "lag_days": int|None}。
+
+    - realtime: 最新必须为当天; 交易日却不是当天 → stale; 周末容忍到上一交易日
+    - daily:    最新不早于上一交易日即 fresh (容忍 T+1 / 周末)
+    """
+    latest_d = _parse_date(latest)
+    if latest_d is None:
+        return {"status": "missing", "lag_days": None}
+    if latest_d > as_of:  # 未来日期 (时钟漂移) 视为新鲜而非滞后
+        return {"status": "fresh", "lag_days": 0}
+    lag = (as_of - latest_d).days
+    if granularity == "realtime":
+        if latest_d == as_of:
+            return {"status": "fresh", "lag_days": 0}
+        if _is_trading_day_heuristic(as_of):
+            return {"status": "stale", "lag_days": lag}
+        prev = _prev_trading_day(as_of)
+        return {"status": "fresh" if latest_d >= prev else "stale", "lag_days": lag}
+    prev = _prev_trading_day(as_of)
+    if latest_d >= prev:
+        return {"status": "fresh", "lag_days": lag}
+    return {"status": "stale", "lag_days": lag}
+
+
 # zzshare 实时模块: 数据来自实时接口, 不落内部 parquet 表, 以 *_summary().available 判定健康
 _ZZSHARE_LAYER_KEYS: dict[str, str] = {
     "topic_rank": "topics",
@@ -52,14 +115,35 @@ _ZZSHARE_LAYER_KEYS: dict[str, str] = {
     "movement_alerts": "movement",
 }
 
+# 各层粒度: realtime 必须当天, daily 容忍 T+1
+_LAYER_GRANULARITY: dict[str, str] = {
+    "kline_daily": "daily",
+    "kline_daily_enriched": "daily",
+    "kline_minute": "realtime",
+    "regime_history": "daily",
+    "mainline_history": "daily",
+    "plans": "daily",
+    "reviews": "daily",
+    "topic_rank": "realtime",
+    "uplimit": "realtime",
+    "lhb": "realtime",
+    "sentiment": "realtime",
+    "ths_hot": "realtime",
+    "ai_reports": "realtime",
+    "movement_alerts": "realtime",
+}
 
-def data_health(data_dir: Path, zz_summary: dict | None = None) -> dict:
+
+def data_health(data_dir: Path, zz_summary: dict | None = None,
+                as_of: date | None = None) -> dict:
     """链路各层健康: 日线 → 富化 → 环境 → 主线 → 计划 → 复盘 + zzshare 实时模块。
 
     zz_summary: 已计算的 zzshare 扩展摘要 (cockpit_overview 传入复用); 缺省时自算。
+    as_of:      新鲜度基准日 (默认今天); 各层据此算 fresh/stale/missing。
     """
     if zz_summary is None:
         zz_summary = _zzshare_summary(data_dir)
+    as_of = as_of or date.today()
     base = data_dir
     layers: list[dict] = []
     specs = [
@@ -79,6 +163,7 @@ def data_health(data_dir: Path, zz_summary: dict | None = None) -> dict:
         ("movement_alerts", "监管预警", base / "movement_alerts"),
     ]
     for key, label, path in specs:
+        gran = _LAYER_GRANULARITY.get(key, "daily")
         if key in _ZZSHARE_LAYER_KEYS:
             sub = zz_summary.get(_ZZSHARE_LAYER_KEYS[key]) or {}
             avail = bool(sub.get("available"))
@@ -94,6 +179,7 @@ def data_health(data_dir: Path, zz_summary: dict | None = None) -> dict:
             st = {"exists": path.exists(), "partitions": 1 if path.exists() else 0,
                   "latest": None}
         st.update({"key": key, "label": label})
+        st["freshness"] = _freshness(st.get("latest"), as_of, gran)
         layers.append(st)
 
     # 富化是否落后日线
@@ -182,22 +268,28 @@ def _alerts(health: dict, mainline: dict, regime: dict, wf_overview: dict) -> li
     rich = layers.get("kline_daily_enriched", {})
     if not daily.get("partitions"):
         out.append({"level": "error", "title": "日线数据为空",
-                    "detail": "未同步任何日线行情, 需用 zzshare 数据源执行日线同步"})
+                    "detail": "未同步任何日线行情, 需用 zzshare 数据源执行日线同步",
+                    "action": ACTION_PIPELINE, "action_label": "运行盘后管道"})
     if not rich.get("partitions"):
         out.append({"level": "error", "title": "富化行情未生成",
-                    "detail": "计划生成/复盘/主线认证均依赖 enriched, 需先构建富化 (可运行 enriched 重建)"})
+                    "detail": "计划生成/复盘/主线认证均依赖 enriched, 需先构建富化",
+                    "action": ACTION_REBUILD_ENRICHED, "action_label": "重建富化"})
     elif health.get("enriched_behind_daily"):
         out.append({"level": "warn", "title": "富化落后日线",
-                    "detail": f"富化最新 {rich['latest']} < 日线最新 {daily['latest']}, 复盘会缺尾部交易日"})
+                    "detail": f"富化最新 {rich['latest']} < 日线最新 {daily['latest']}, 复盘会缺尾部交易日",
+                    "action": ACTION_REBUILD_ENRICHED, "action_label": "重建富化"})
     if not layers.get("kline_minute", {}).get("partitions"):
         out.append({"level": "info", "title": "无分钟行情",
-                    "detail": "分钟级数据未同步 (zzshare 支持), 盘中监控与竞价分析暂不可用"})
+                    "detail": "分钟级数据未同步 (zzshare 支持), 盘中监控与竞价分析暂不可用",
+                    "action": ACTION_SYNC_MINUTE, "action_label": "同步分钟行情"})
     if not regime.get("available"):
         out.append({"level": "warn", "title": "市场环境未生成",
-                    "detail": regime.get("detail", "regime 历史为空, 环境分/门控建议不可用")})
+                    "detail": regime.get("detail", "regime 历史为空, 环境分/门控建议不可用"),
+                    "action": ACTION_REGIME, "action_label": "重建环境分"})
     if not mainline.get("available"):
         out.append({"level": "warn", "title": "主线认证不可用",
-                    "detail": mainline.get("detail", "主线时序为空")})
+                    "detail": mainline.get("detail", "主线时序为空"),
+                    "action": ACTION_MAINLINE, "action_label": "重算主线"})
     else:
         if mainline["gold_count"] == 0:
             out.append({"level": "info", "title": "暂无金牌主线",
@@ -208,34 +300,131 @@ def _alerts(health: dict, mainline: dict, regime: dict, wf_overview: dict) -> li
     if latest_plan:
         if latest_plan.get("status") != "reviewed":
             out.append({"level": "warn", "title": f"计划 {latest_plan.get('plan_id')} 待复盘",
-                        "detail": f"{latest_plan.get('trade_date')} · {latest_plan.get('entries')} 个标的, 执行后请运行复盘"})
+                        "detail": f"{latest_plan.get('trade_date')} · {latest_plan.get('entries')} 个标的, 执行后请运行复盘",
+                        "action": ACTION_REVIEW_PLAN, "action_label": "运行复盘",
+                        "action_payload": {"plan_id": latest_plan.get("plan_id")}})
     else:
         out.append({"level": "info", "title": "今日尚无计划",
-                    "detail": "可在工作流页生成盘前计划 (进化推荐扫描 + 自选)"})
+                    "detail": "可在工作流页生成盘前计划 (进化推荐扫描 + 自选)",
+                    "action": ACTION_GENERATE_PLAN, "action_label": "生成盘前计划"})
     if not (ov.get("applied_evolution") or []):
         out.append({"level": "info", "title": "未应用进化参数",
-                    "detail": "可在进化页运行 walk-forward 并应用推荐"})
+                    "detail": "可运行 walk-forward 扫描并应用推荐",
+                    "action": ACTION_EVOLUTION, "action_label": "去进化页处理"})
+
+    # 数据新鲜度: 滞后 (stale) 的各层聚合为提醒, 区分内部链路与实时源
+    stale_internal, stale_rt = [], []
+    for lyr in health.get("layers", []):
+        if lyr.get("freshness", {}).get("status") == "stale":
+            (stale_rt if lyr.get("source") == "zzshare" else stale_internal).append(lyr["label"])
+    if stale_internal:
+        out.append({"level": "warn", "title": "数据链路滞后",
+                    "detail": "以下层级最新日期落后: " + "、".join(stale_internal)
+                              + " (详见数据链路卡片)",
+                    "action": ACTION_PIPELINE, "action_label": "运行盘后管道"})
+    if stale_rt:
+        out.append({"level": "warn", "title": "实时数据源滞后",
+                    "detail": "zzshare 实时模块落后: " + "、".join(stale_rt),
+                    "action": ACTION_PIPELINE, "action_label": "运行盘后管道"})
     return out
 
 
 def cockpit_overview(data_dir: Path) -> dict:
-    """驾驶舱总览: 环境 + 数据健康 + 主线认证 + 工作流 + 提醒 + zzshare 扩展。"""
+    """驾驶舱总览: 环境 + 数据健康 + 主线认证 + 工作流 + 提醒 + zzshare 扩展 + 节点时间线。"""
+    as_of = date.today()
     zz = _zzshare_summary(data_dir)
-    health = data_health(data_dir, zz_summary=zz)
+    health = data_health(data_dir, zz_summary=zz, as_of=as_of)
     mainline = mainline_certification(data_dir)
     regime = _regime_summary(data_dir)
     wf_overview = _safe_wf_overview(data_dir)
     alerts = _alerts(health, mainline, regime, wf_overview)
+    session = cockpit_session(health=health)
     return {
-        "as_of": date.today().isoformat(),
+        "as_of": as_of.isoformat(),
         "health": health,
         "mainline": mainline,
         "regime": regime,
         "workflow": wf_overview,
         "zzshare": zz,
+        "session": session,
         "alerts": alerts,
         "status": ("ok" if not any(a["level"] == "error" for a in alerts)
                    else "attention"),
+    }
+
+
+# ───────────────────────── 交易节点时间线 ─────────────────────────
+
+# 节点窗口 (北京时间): 盘前 → 竞价 → 早盘 → 午间 → 午盘 → 复盘
+_SESSION_NODES: list[tuple[str, str, dt_time, dt_time]] = [
+    ("premarket", "盘前", dt_time(0, 0), dt_time(9, 15)),
+    ("auction", "竞价", dt_time(9, 15), dt_time(9, 30)),
+    ("morning", "早盘", dt_time(9, 30), dt_time(11, 30)),
+    ("midday", "午间", dt_time(11, 30), dt_time(13, 0)),
+    ("afternoon", "午盘", dt_time(13, 0), dt_time(15, 0)),
+    ("review", "复盘", dt_time(15, 0), dt_time(17, 0)),
+]
+
+
+def cockpit_session(health: dict | None = None, now: datetime | None = None) -> dict:
+    """交易节点时间线: 按北京时间把一天切成 6 个节点, 标 done/active/pending;
+    并交叉引用今日数据存在性 (盘前计划/盘中分钟/复盘记录) 作为 data_ready 提示。
+
+    轻量节点模型: 状态由当前时间推导, 不新增存储; 数据存在性复用 health 各层 latest。
+    """
+    from app.market_time import cn_now
+
+    now = now or cn_now()
+    t = now.time()
+    today_str = now.date().isoformat()
+
+    # 今日数据存在性 (由 health 各层 latest 判定)
+    plan_today = review_today = intraday_fresh = None
+    if health is not None:
+        by_key = {lyr["key"]: lyr for lyr in health.get("layers", [])}
+        p = by_key.get("plans", {})
+        plan_today = (p.get("latest") == today_str)
+        r = by_key.get("reviews", {})
+        review_today = (r.get("latest") == today_str)
+        m = by_key.get("kline_minute", {})
+        intraday_fresh = (m.get("freshness", {}).get("status") == "fresh")
+    data_ready = {
+        "premarket": plan_today,
+        "morning": intraday_fresh,
+        "afternoon": intraday_fresh,
+        "review": review_today,
+    }
+
+    nodes: list[dict] = []
+    current = None
+    for key, label, start, end in _SESSION_NODES:
+        if t < start:
+            state = "pending"
+        elif t < end:
+            state = "active"
+            current = label
+        else:
+            state = "done"
+        nodes.append({
+            "key": key,
+            "label": label,
+            "window": f"{start.strftime('%H:%M')}-{end.strftime('%H:%M')}",
+            "state": state,
+            "data_ready": data_ready.get(key),
+        })
+    if not _is_trading_day_heuristic(now.date()):
+        # 非交易日: 全天不标进行中/待开始, 当前语境为休市
+        for n in nodes:
+            n["state"] = "done"
+        current = "休市"
+    elif current is None:
+        # 不在任何 active 窗口 (如盘后 17:00 后): 用最后一个已结束节点作为当前语境
+        current = nodes[-1]["label"]
+    return {
+        "as_of_time": now.strftime("%Y-%m-%d %H:%M"),
+        "trading_day": _is_trading_day_heuristic(now.date()),
+        "current": current,
+        "nodes": nodes,
     }
 
 

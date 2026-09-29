@@ -352,6 +352,7 @@ def sync_minute(
     freq: str = "1m",
     workers: int = 4,
     progress: Progress | None = None,
+    trade_days: list[str] | None = None,
 ) -> dict:
     """回填最近 N 个交易日 × 股票池的分钟 K → kline_minute (zzshare 数据源)。
 
@@ -369,7 +370,7 @@ def sync_minute(
 
     # 交易日: zzshare 日历, 取最近 N 个
     from datetime import datetime as _dt
-    trade_days = list_trade_days(days)
+    trade_days = trade_days if trade_days is not None else list_trade_days(days)
     if not trade_days:
         raise RuntimeError("zzshare 交易日历为空, 无法同步分钟")
     _emit(progress, f"分钟回填交易日 {len(trade_days)} 天 ({trade_days[0]}~{trade_days[-1]})")

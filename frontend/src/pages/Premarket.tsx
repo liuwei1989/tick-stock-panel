@@ -15,6 +15,8 @@ import { api, type PremarketReport } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { cn } from '@/lib/cn'
 import { PageHeader } from '@/components/PageHeader'
+import { Button } from '@/components/ui/Button'
+import { Input } from '@/components/ui/Input'
 import { toast } from '@/components/Toast'
 
 function LevelBadge({ level }: { level: string }) {
@@ -75,28 +77,28 @@ export default function Premarket() {
         title="盘前研报"
         subtitle="概念 → 核心逻辑 → 催化事件 → 核心股票"
         right={
-          <button className="btn btn-ghost btn-sm" onClick={() => { contextQ.refetch(); listQ.refetch() }}>
+          <Button variant="ghost" size="sm" onClick={() => { contextQ.refetch(); listQ.refetch() }}>
             <RefreshCw className={cn('size-4', contextQ.isFetching && 'animate-spin')} /> 刷新
-          </button>
+          </Button>
         }
       />
 
       {/* 工具栏 */}
-      <div className="mx-5 flex flex-wrap items-end gap-3 rounded-xl border bg-base-200/60 p-3">
+      <div className="mx-5 flex flex-wrap items-end gap-3 rounded-card border border-border bg-surface p-3">
         <div className="flex flex-col gap-1">
           <label className="text-[11px] text-muted">日期 (留空=今日)</label>
-          <input type="date" value={date} onChange={e => setDate(e.target.value)}
-            className="input input-sm input-bordered" />
+          <Input type="date" value={date} onChange={e => setDate(e.target.value)}
+            className="w-auto" size="sm" />
         </div>
         <div className="flex min-w-[200px] flex-1 flex-col gap-1">
           <label className="text-[11px] text-muted">关注点 (可选)</label>
-          <input value={focus} onChange={e => setFocus(e.target.value)} placeholder="如: AI 算力 / 商业航天"
-            className="input input-sm input-bordered" />
+          <Input value={focus} onChange={e => setFocus(e.target.value)} placeholder="如: AI 算力 / 商业航天"
+            size="sm" />
         </div>
-        <button className="btn btn-primary btn-sm" onClick={generate} disabled={streaming}>
+        <Button variant="primary" size="sm" onClick={generate} disabled={streaming}>
           {streaming ? <Loader2 className="size-4 animate-spin" /> : <Sparkles className="size-4" />}
           {streaming ? '生成中…' : '生成研报'}
-        </button>
+        </Button>
       </div>
 
       {ctx && !ctx.available && (
@@ -108,7 +110,7 @@ export default function Premarket() {
       <div className="mx-5 grid gap-4 lg:grid-cols-5">
         {/* 规则版素材 */}
         {ctx && (
-          <div className="rounded-xl border bg-base-200/60 p-4 lg:col-span-2">
+          <div className="rounded-card border border-border bg-surface p-4 lg:col-span-2">
             <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
               <FileText className="size-4" /> 结构化素材
             </div>
@@ -129,7 +131,7 @@ export default function Premarket() {
                   ))}
                 </div>
                 {ctx.catalysts.length > 0 && (
-                  <div className="border-t border-base-300 pt-2">
+                  <div className="border-t border-border pt-2">
                     <div className="mb-1 text-xs font-medium text-muted">催化锚点 (待验证)</div>
                     {ctx.catalysts.map(c => (
                       <div key={c.member} className="text-xs text-muted">· {c.event}</div>
@@ -137,7 +139,7 @@ export default function Premarket() {
                   </div>
                 )}
                 {ctx.plan && (
-                  <div className="border-t border-base-300 pt-2 text-xs text-muted">
+                  <div className="border-t border-border pt-2 text-xs text-muted">
                     今日计划 {ctx.plan.plan_id} · {ctx.plan.entries} 标的 · {ctx.plan.status}
                   </div>
                 )}
@@ -149,11 +151,11 @@ export default function Premarket() {
         )}
 
         {/* 研报正文 */}
-        <div className="rounded-xl border bg-base-200/60 p-4 lg:col-span-3">
+        <div className="rounded-card border border-border bg-surface p-4 lg:col-span-3">
           <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
             <Sparkles className="size-4" /> 研报正文
             {report?.ai && <span className="rounded-full bg-sky-500/10 px-2 py-0.5 text-[11px] text-sky-400">AI</span>}
-            {report && !report.ai && <span className="rounded-full bg-base-300 px-2 py-0.5 text-[11px] text-muted">规则版</span>}
+            {report && !report.ai && <span className="rounded-full bg-elevated px-2 py-0.5 text-[11px] text-muted">规则版</span>}
           </div>
           {streaming && (
             <div className="mb-2 flex items-center gap-2 text-xs text-muted">
@@ -174,13 +176,13 @@ export default function Premarket() {
 
       {/* 历史研报 */}
       {listQ.data && listQ.data.reports.length > 0 && (
-        <div className="mx-5 rounded-xl border bg-base-200/60 p-4">
+        <div className="mx-5 rounded-card border border-border bg-surface p-4">
           <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
             <History className="size-4" /> 历史研报
           </div>
           <div className="space-y-2">
             {listQ.data.reports.slice(0, 10).map(r => (
-              <button key={r.as_of} className="flex w-full items-center justify-between gap-2 rounded-lg border border-base-300 bg-base/40 px-3 py-2 text-left transition-colors hover:border-accent/40"
+              <button key={r.as_of} className="flex w-full items-center justify-between gap-2 rounded-lg border border-border bg-base/40 px-3 py-2 text-left transition-colors hover:border-accent/40"
                 onClick={() => { setDate(r.as_of); setContent(r.content ?? ''); setLastReport(r) }}>
                 <div className="flex min-w-0 items-center gap-2 text-sm">
                   <FileText className="size-3.5 shrink-0 text-muted" />

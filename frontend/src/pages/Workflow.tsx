@@ -96,7 +96,7 @@ export default function Workflow() {
         subtitle="策略发现 → 盘前计划 → 复盘"
         right={
           <div className="flex items-center gap-2">
-            <div className="flex items-center gap-1 rounded-lg border border-zinc-800 bg-zinc-900/60 px-2 py-1">
+            <div className="flex items-center gap-1 rounded-lg border border-border bg-surface px-2 py-1">
               <span className="text-xs text-muted">上限</span>
               <input
                 type="number" min={1} max={200} value={maxEntries}
@@ -107,14 +107,14 @@ export default function Workflow() {
             <button
               onClick={() => generate.mutate()}
               disabled={generate.isPending}
-              className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
+              className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-white hover:bg-accent/90 disabled:opacity-50"
             >
               {generate.isPending ? <Loader2 className="size-4 animate-spin" /> : <Plus className="size-4" />}
               生成今日计划
             </button>
             <button
               onClick={() => { qc.invalidateQueries({ queryKey: QK.workflowOverview }); qc.invalidateQueries({ queryKey: QK.workflowPlans() }) }}
-              className="flex items-center gap-1 rounded-lg border border-zinc-800 px-2 py-1.5 text-sm hover:bg-zinc-900"
+              className="flex items-center gap-1 rounded-lg border border-border px-2 py-1.5 text-sm hover:bg-elevated"
             >
               <RefreshCw className="size-3.5" /> 刷新
             </button>
@@ -137,8 +137,8 @@ export default function Workflow() {
 
       <div className="grid min-h-0 flex-1 grid-cols-1 gap-4 lg:grid-cols-[300px_1fr]">
         {/* 左: 计划列表 */}
-        <div className="flex min-h-0 flex-col rounded-xl border border-zinc-800 bg-zinc-900/40">
-          <div className="border-b border-zinc-800 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted">
+        <div className="flex min-h-0 flex-col rounded-xl border border-border bg-surface">
+          <div className="border-b border-border px-3 py-2 text-xs font-semibold uppercase tracking-wide text-muted">
             盘前计划 ({plans.length})
           </div>
           <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
@@ -155,8 +155,8 @@ export default function Workflow() {
                 className={cn(
                   'flex w-full flex-col gap-1 rounded-lg border px-3 py-2 text-left transition',
                   p.plan_id === (plan?.plan_id ?? latestPlan?.plan_id)
-                    ? 'border-primary/50 bg-primary/10'
-                    : 'border-zinc-800 hover:bg-zinc-900',
+                    ? 'border-accent/50 bg-accent/10'
+                    : 'border-border hover:bg-elevated',
                 )}
               >
                 <div className="flex items-center justify-between">
@@ -173,12 +173,12 @@ export default function Workflow() {
         </div>
 
         {/* 右: 详情 */}
-        <div className="min-h-0 overflow-y-auto rounded-xl border border-zinc-800 bg-zinc-900/40 p-4">
+        <div className="min-h-0 overflow-y-auto rounded-xl border border-border bg-surface p-4">
           {!plan ? (
             <div className="flex h-full flex-col items-center justify-center gap-3 text-center text-sm text-muted">
               <Sparkles className="size-10 opacity-40" />
               <div>
-                <p className="text-base font-medium text-foreground">选择左侧计划查看详情</p>
+                <p className="text-[16px] leading-6 font-medium text-foreground">选择左侧计划查看详情</p>
                 <p className="mt-1">或先生成计划 — 将用进化推荐策略扫描 + 自选股补充池</p>
               </div>
             </div>
@@ -187,12 +187,12 @@ export default function Workflow() {
               {/* 计划头 */}
               <div className="flex flex-wrap items-center justify-between gap-2">
                 <div>
-                  <h2 className="text-base font-semibold">{plan.plan_id}</h2>
+                  <h2 className="text-[16px] leading-6 font-semibold">{plan.plan_id}</h2>
                   <p className="text-xs text-muted">交易日 {plan.trade_date} · 生成于 {plan.created_at.slice(5, 16)}</p>
                 </div>
                 <div className="flex items-center gap-2">
                   {plan.regime?.phase ? (
-                    <span className="rounded-full bg-zinc-800 px-2 py-0.5 text-xs">
+                    <span className="rounded-full bg-elevated px-2 py-0.5 text-xs">
                       环境 {String(plan.regime.state ?? '')} / {String(plan.regime.phase ?? '')}
                       {plan.regime.score != null ? ` · 分 ${plan.regime.score}` : ''}
                     </span>
@@ -209,7 +209,7 @@ export default function Workflow() {
                       <select
                         value={trackDays}
                         onChange={(e) => setTrackDays(Number(e.target.value))}
-                        className="rounded-lg border border-zinc-800 bg-zinc-900 px-1.5 py-1 text-xs outline-none"
+                        className="rounded-lg border border-border bg-surface px-1.5 py-1 text-xs outline-none"
                         title="持有期跟踪天数 (交易日, 含执行日)"
                       >
                         <option value={1}>当日</option>
@@ -232,7 +232,7 @@ export default function Workflow() {
               {/* 策略来源 */}
               <div className="mt-2 flex flex-wrap gap-1.5">
                 {(plan.source?.strategies ?? []).map((s) => (
-                  <span key={s.strategy_id} className="rounded-md bg-zinc-800/80 px-1.5 py-0.5 text-[11px] text-muted">
+                  <span key={s.strategy_id} className="rounded-md bg-elevated px-1.5 py-0.5 text-[11px] text-muted">
                     {s.name || s.strategy_id} <span className="opacity-60">· {s.source}</span>
                   </span>
                 ))}
@@ -245,7 +245,7 @@ export default function Workflow() {
               <div className="mt-4 overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr className="border-b border-zinc-800 text-left text-xs text-muted">
+                    <tr className="border-b border-border text-left text-xs text-muted">
                       <th className="py-2 pr-2 font-medium">标的</th>
                       <th className="py-2 pr-2 font-medium">策略</th>
                       <th className="py-2 pr-2 font-medium">加入信号</th>
@@ -260,7 +260,7 @@ export default function Workflow() {
                   </thead>
                   <tbody>
                     {plan.entries.map((e) => (
-                      <tr key={e.symbol} className="border-b border-zinc-800/60 hover:bg-zinc-900/40">
+                      <tr key={e.symbol} className="border-b border-border/60 hover:bg-elevated/40">
                         <td className="py-2 pr-2 font-medium">{e.symbol}</td>
                         <td className="py-2 pr-2 text-xs text-muted">{e.strategy_name || e.strategy_id}</td>
                         <td className="max-w-[140px] truncate py-2 pr-2 text-xs text-emerald-400/90" title={e.entry_signal}>
@@ -330,7 +330,7 @@ function ReviewPanel({ planId }: { planId: string }) {
       <div className="mt-3 overflow-x-auto">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-zinc-800 text-left text-xs text-muted">
+            <tr className="border-b border-border text-left text-xs text-muted">
               <th className="py-1.5 pr-2 font-medium">标的</th>
               <th className="py-1.5 pr-2 text-right font-medium">开盘</th>
               <th className="py-1.5 pr-2 text-right font-medium">最高</th>
@@ -347,7 +347,7 @@ function ReviewPanel({ planId }: { planId: string }) {
           </thead>
           <tbody>
             {review.results.map((r) => (
-              <tr key={r.symbol} className="border-b border-zinc-800/60">
+              <tr key={r.symbol} className="border-b border-border/60">
                 <td className="py-1.5 pr-2 font-medium">{r.symbol}</td>
                 <td className="py-1.5 pr-2 text-right text-xs text-muted">{r.open ?? '—'}</td>
                 <td className="py-1.5 pr-2 text-right text-xs text-muted">{r.high ?? '—'}</td>
@@ -385,7 +385,7 @@ function ReviewPanel({ planId }: { planId: string }) {
           <div className="text-xs font-semibold uppercase tracking-wide text-muted">策略表现反馈 (回写进化)</div>
           <div className="mt-1.5 flex flex-wrap gap-2">
             {review.strategy_feedback.map((f) => (
-              <div key={f.strategy_id} className="rounded-lg border border-zinc-800 bg-zinc-900/60 px-2.5 py-1.5 text-xs">
+              <div key={f.strategy_id} className="rounded-lg border border-border bg-surface px-2.5 py-1.5 text-xs">
                 <span className="font-medium">{f.strategy_id}</span>
                 <span className="mx-1.5 text-muted">触发 {f.triggered}/{f.planned}</span>
                 <span className={cn('font-medium', f.win_rate >= 0.5 ? 'text-emerald-400' : 'text-rose-400')}>
@@ -403,10 +403,10 @@ function ReviewPanel({ planId }: { planId: string }) {
 
 function StatCard({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: 'good' | 'warn' }) {
   return (
-    <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-3">
+    <div className="rounded-xl border border-border bg-surface p-3">
       <div className="text-xs text-muted">{label}</div>
       <div className={cn(
-        'mt-1 truncate text-base font-semibold',
+        'mt-1 truncate text-[16px] leading-6 font-semibold',
         tone === 'good' ? 'text-emerald-400' : tone === 'warn' ? 'text-amber-400' : 'text-foreground',
       )}>{value}</div>
       {sub && <div className="mt-0.5 truncate text-[11px] text-muted">{sub}</div>}
@@ -416,7 +416,7 @@ function StatCard({ label, value, sub, tone }: { label: string; value: string; s
 
 function MiniStat({ label, value, sub, tone }: { label: string; value: string; sub?: string; tone?: 'good' | 'bad' }) {
   return (
-    <div className="rounded-lg border border-zinc-800/80 bg-zinc-900/50 px-2.5 py-1.5">
+    <div className="rounded-lg border border-border/80 bg-surface px-2.5 py-1.5">
       <div className="text-[11px] text-muted">{label}</div>
       <div className={cn('text-sm font-semibold', tone === 'good' ? 'text-emerald-400' : tone === 'bad' ? 'text-rose-400' : 'text-foreground')}>
         {value}

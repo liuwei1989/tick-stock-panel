@@ -315,7 +315,7 @@ export function Dashboard() {
         <div className="pointer-events-none absolute left-0 top-0 h-full w-1 bg-gradient-to-b from-accent to-accent/20" aria-hidden />
         <div className="flex items-center gap-2">
           <Gauge className="h-4 w-4 text-accent" />
-          <h1 className="text-[16px] leading-6 font-semibold text-foreground">市场看板</h1>
+          <h1 className="text-lg font-semibold tracking-tight text-foreground">市场看板</h1>
           <span
             className="rounded-full border px-2 py-0.5 text-[10px] font-medium"
             style={{

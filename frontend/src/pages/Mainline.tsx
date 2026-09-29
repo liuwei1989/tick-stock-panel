@@ -15,6 +15,7 @@ import { RefreshCw, Flame, Crown, Loader2, AlertTriangle } from 'lucide-react'
 import { api } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import { PageHeader } from '@/components/PageHeader'
+import { Button } from '@/components/ui/Button'
 
 const LEVEL_META: Record<string, { label: string; cls: string; hint: string }> = {
   gold: { label: '金牌主升', cls: 'bg-yellow-500/15 text-yellow-400 border-yellow-500/40', hint: '连续上榜 + 5日均强度≥60' },
@@ -33,9 +34,9 @@ export default function Mainline() {
         title="主线认证"
         subtitle="题材持续性认证 + 主线龙头身位"
         right={
-          <button className="btn btn-ghost btn-sm" onClick={() => q.refetch()}>
+          <Button variant="ghost" size="sm" onClick={() => q.refetch()}>
             <RefreshCw className={cn('size-4', q.isFetching && 'animate-spin')} /> 刷新
-          </button>
+          </Button>
         }
       />
 
@@ -76,10 +77,10 @@ export default function Mainline() {
           </div>
 
           {/* 题材表 */}
-          <div className="overflow-hidden rounded-xl border bg-base-200/60">
+          <div className="overflow-hidden rounded-card border border-border bg-surface">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-base-300 bg-base/40 text-left text-[11px] uppercase tracking-wider text-muted">
+                <tr className="border-b border-border bg-base/40 text-left text-[11px] uppercase tracking-wider text-muted">
                   <th className="px-3 py-2">#</th>
                   <th className="px-3 py-2">题材</th>
                   <th className="px-3 py-2">认证</th>
@@ -95,7 +96,7 @@ export default function Mainline() {
                 {d.mainline.items!.map((i, idx) => {
                   const m = LEVEL_META[i.level]
                   return (
-                    <tr key={i.member} className="border-b border-base-300/60 last:border-0 hover:bg-base/40">
+                    <tr key={i.member} className="border-b border-border/60 last:border-0 hover:bg-base/40">
                       <td className="px-3 py-2 text-xs text-muted">{idx + 1}</td>
                       <td className="px-3 py-2 font-medium">{i.member}</td>
                       <td className="px-3 py-2">

@@ -13,6 +13,8 @@ import { RefreshCw, Trophy, Users, Landmark, Loader2, AlertTriangle } from 'luci
 import { api, type DragonTigerPayload } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import { PageHeader } from '@/components/PageHeader'
+import { Button } from '@/components/ui/Button'
+import { Input } from '@/components/ui/Input'
 
 function fmtMoney(v: number | null | undefined): string {
   if (v == null || Number.isNaN(v)) return '—'
@@ -50,10 +52,10 @@ export default function DragonTiger() {
         subtitle="游资席位动向 / 净买个股 / 机构对比"
         right={
           <div className="flex items-center gap-2">
-            <input type="date" value={date} onChange={e => setDate(e.target.value)} className="input input-sm input-bordered" />
-            <button className="btn btn-ghost btn-sm" onClick={() => q.refetch()}>
+            <Input type="date" value={date} onChange={e => setDate(e.target.value)} className="w-auto" size="sm" />
+            <Button variant="ghost" size="sm" onClick={() => q.refetch()}>
               <RefreshCw className={cn('size-4', q.isFetching && 'animate-spin')} /> 刷新
-            </button>
+            </Button>
           </div>
         }
       />
@@ -69,14 +71,14 @@ export default function DragonTiger() {
 
       {d && d.state !== 'source_unavailable' && d.state !== 'no_data' && (
         <div className="mx-5 space-y-4">
-          <div className="flex flex-wrap items-center gap-3 rounded-xl border bg-base-200/60 p-3 text-xs text-muted">
+          <div className="flex flex-wrap items-center gap-3 rounded-xl border bg-surface p-3 text-xs text-muted">
             <span>交易日 <span className="font-mono text-foreground">{d.trade_date ?? '—'}</span></span>
             {d.state === 'fallback_prev' && <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-amber-400">当日未发布, 已回退上一期</span>}
             <div className="ml-auto flex gap-1">
               {([['hot_money', '游资席位', Users], ['all', '全部', Trophy], ['org', '机构', Landmark]] as const).map(([k, label, Icon]) => (
                 <button key={k} onClick={() => setTab(k)}
                   className={cn('inline-flex items-center gap-1 rounded-lg px-2.5 py-1 text-xs transition-colors',
-                    tab === k ? 'bg-primary text-primary-content' : 'hover:bg-base-300')}>
+                    tab === k ? 'bg-accent text-white' : 'hover:bg-elevated')}>
                   <Icon className="size-3.5" /> {label}
                 </button>
               ))}
@@ -86,7 +88,7 @@ export default function DragonTiger() {
           {/* 游资席位 Top */}
           {tab === 'hot_money' && (
             <div className="grid gap-4 lg:grid-cols-2">
-              <div className="rounded-xl border bg-base-200/60 p-4">
+              <div className="rounded-xl border bg-surface p-4">
                 <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
                   <Users className="size-4" /> 游资席位净买 Top
                 </div>
@@ -105,7 +107,7 @@ export default function DragonTiger() {
                   </div>
                 )}
               </div>
-              <div className="rounded-xl border bg-base-200/60 p-4">
+              <div className="rounded-xl border bg-surface p-4">
                 <div className="mb-3 flex items-center gap-2 text-sm font-semibold">
                   <Trophy className="size-4" /> 游资关联个股
                 </div>
@@ -127,10 +129,10 @@ export default function DragonTiger() {
 
           {/* 个股榜 */}
           {tab !== 'hot_money' && (
-            <div className="overflow-hidden rounded-xl border bg-base-200/60">
+            <div className="overflow-hidden rounded-xl border bg-surface">
               <table className="w-full text-sm">
                 <thead>
-                  <tr className="border-b border-base-300 bg-base/40 text-left text-[11px] uppercase tracking-wider text-muted">
+                  <tr className="border-b border-border bg-base/40 text-left text-[11px] uppercase tracking-wider text-muted">
                     <th className="px-3 py-2">#</th>
                     <th className="px-3 py-2">股票</th>
                     <th className="px-3 py-2 text-right">涨跌幅</th>
@@ -142,7 +144,7 @@ export default function DragonTiger() {
                 </thead>
                 <tbody>
                   {stocks.map((r, i) => (
-                    <tr key={r.thscode} className="border-b border-base-300/60 last:border-0 hover:bg-base/40">
+                    <tr key={r.thscode} className="border-b border-border/60 last:border-0 hover:bg-base/40">
                       <td className="px-3 py-2 text-xs text-muted">{i + 1}</td>
                       <td className="px-3 py-2 font-medium">
                         {r.name ?? r.thscode}

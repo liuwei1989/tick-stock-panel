@@ -145,7 +145,7 @@ export function Analysis() {
 
       <div className="px-8 py-6 max-w-6xl space-y-6">
         <section className="rounded-2xl border border-border bg-surface p-6 bg-[radial-gradient(circle_at_top_right,rgba(139,92,246,0.14),transparent_38%)]">
-          <div className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-[11px] text-secondary">
+          <div className="inline-flex items-center gap-2 rounded-full border border-border bg-elevated/50 px-3 py-1 text-[11px] text-secondary">
             <BarChart3 className="h-3.5 w-3.5" />
             扩展数据 → 分析菜单 → 动态页面
           </div>

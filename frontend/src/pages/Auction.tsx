@@ -13,6 +13,8 @@ import { RefreshCw, Gavel, Loader2, AlertTriangle, TrendingUp, TrendingDown, Sca
 import { api, type AuctionBenchmarkPayload } from '@/lib/api'
 import { cn } from '@/lib/cn'
 import { PageHeader } from '@/components/PageHeader'
+import { Button } from '@/components/ui/Button'
+import { Input } from '@/components/ui/Input'
 
 function pctCls(v: number | null | undefined): string {
   if (v == null || v === 0) return 'text-muted'
@@ -41,10 +43,10 @@ export default function Auction() {
         subtitle="盘前竞价风向标 · 当日观察名单 (非隔夜信号)"
         right={
           <div className="flex items-center gap-2">
-            <input type="date" value={date} onChange={e => setDate(e.target.value)} className="input input-sm input-bordered" />
-            <button className="btn btn-ghost btn-sm" onClick={() => q.refetch()}>
+            <Input type="date" value={date} onChange={e => setDate(e.target.value)} className="w-auto" size="sm" />
+            <Button variant="ghost" size="sm" onClick={() => q.refetch()}>
               <RefreshCw className={cn('size-4', q.isFetching && 'animate-spin')} /> 刷新
-            </button>
+            </Button>
           </div>
         }
       />
@@ -62,29 +64,29 @@ export default function Auction() {
         <div className="mx-5 space-y-4">
           {/* 统计条 */}
           <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-            <div className="rounded-xl border bg-base-200/60 p-3">
+            <div className="rounded-card border border-border bg-surface p-3">
               <div className="flex items-center gap-1.5 text-[11px] text-muted"><Gavel className="size-3" /> 名单</div>
               <div className="mt-1 text-xl font-semibold">{stats.count} 只</div>
             </div>
-            <div className="rounded-xl border bg-base-200/60 p-3">
+            <div className="rounded-card border border-border bg-surface p-3">
               <div className="flex items-center gap-1.5 text-[11px] text-muted"><TrendingUp className="size-3" /> 当日均值 (开→收)</div>
               <div className={cn('mt-1 text-xl font-semibold', pctCls(stats.avgDay0))}>
                 {stats.avgDay0 == null ? '—' : `${(stats.avgDay0 * 100).toFixed(2)}%`}
               </div>
             </div>
-            <div className="rounded-xl border bg-base-200/60 p-3">
+            <div className="rounded-card border border-border bg-surface p-3">
               <div className="flex items-center gap-1.5 text-[11px] text-muted"><TrendingDown className="size-3" /> 次日均值</div>
               <div className={cn('mt-1 text-xl font-semibold', pctCls(stats.avgD1))}>
                 {stats.avgD1 == null ? '—' : `${(stats.avgD1 * 100).toFixed(2)}%`}
               </div>
             </div>
-            <div className="rounded-xl border bg-base-200/60 p-3">
+            <div className="rounded-card border border-border bg-surface p-3">
               <div className="flex items-center gap-1.5 text-[11px] text-muted"><Scale className="size-3" /> 高开 ≥5% (追高风险)</div>
               <div className="mt-1 text-xl font-semibold text-orange-400">{stats.highOpenCount} 只</div>
             </div>
           </div>
 
-          <div className="rounded-xl border bg-base-200/60 p-4">
+          <div className="rounded-card border border-border bg-surface p-4">
             <div className="mb-2 flex items-center gap-2 text-sm font-semibold">
               <Gavel className="size-4" /> 竞价名单 {d.trade_date && <span className="text-xs font-normal text-muted">({d.trade_date})</span>}
               {d.state === 'fallback_prev' && <span className="rounded-full bg-amber-500/10 px-2 py-0.5 text-[11px] text-amber-400">当日未发布, 回退上一期</span>}
@@ -93,7 +95,7 @@ export default function Auction() {
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
                   <thead>
-                    <tr className="border-b border-base-300 bg-base/40 text-left text-[11px] uppercase tracking-wider text-muted">
+                    <tr className="border-b border-border bg-base/40 text-left text-[11px] uppercase tracking-wider text-muted">
                       <th className="px-3 py-2">股票</th>
                       <th className="px-3 py-2 text-right">竞价涨跌</th>
                       <th className="px-3 py-2">概念</th>
@@ -104,7 +106,7 @@ export default function Auction() {
                   </thead>
                   <tbody>
                     {(d.items ?? []).map(r => (
-                      <tr key={r.thscode} className="border-b border-base-300/60 last:border-0 hover:bg-base/40">
+                      <tr key={r.thscode} className="border-b border-border/60 last:border-0 hover:bg-base/40">
                         <td className="px-3 py-2 font-medium">{r.name ?? r.thscode}</td>
                         <td className={cn('px-3 py-2 text-right font-mono', (r.auction_pct ?? 0) >= 5 ? 'text-orange-400' : pctCls(r.auction_pct))}>
                           {r.auction_pct != null ? `${r.auction_pct > 0 ? '+' : ''}${r.auction_pct.toFixed(2)}%` : '—'}
@@ -113,7 +115,7 @@ export default function Auction() {
                         <td className="px-3 py-2">
                           <div className="flex max-w-[260px] flex-wrap gap-1">
                             {(r.tags ?? []).slice(0, 4).map(t => (
-                              <span key={t} className="rounded bg-base-300 px-1 py-0.5 text-[10px] text-muted">{t}</span>
+                              <span key={t} className="rounded bg-elevated px-1 py-0.5 text-[10px] text-muted">{t}</span>
                             ))}
                           </div>
                         </td>

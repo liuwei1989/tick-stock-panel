@@ -14,6 +14,8 @@ import { api, type TopicOcrResult } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
 import { cn } from '@/lib/cn'
 import { PageHeader } from '@/components/PageHeader'
+import { Button } from '@/components/ui/Button'
+import { Input } from '@/components/ui/Input'
 import { toast } from '@/components/Toast'
 
 function LevelBadge({ level }: { level: string }) {
@@ -70,9 +72,9 @@ export default function Topics() {
         title="题材表格"
         subtitle="题材强度 / 成分股 / OCR 导入 / 回测入口"
         right={
-          <button className="btn btn-ghost btn-sm" onClick={() => tableQ.refetch()}>
+          <Button variant="ghost" size="sm" onClick={() => tableQ.refetch()}>
             <RefreshCw className={cn('size-4', tableQ.isFetching && 'animate-spin')} /> 刷新
-          </button>
+          </Button>
         }
       />
 
@@ -87,18 +89,18 @@ export default function Topics() {
           <div className="flex items-center gap-2">
             <div className="relative flex-1">
               <Search className="absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted" />
-              <input value={search} onChange={e => setSearch(e.target.value)} placeholder="搜索题材…"
-                className="input input-sm input-bordered w-full pl-8" />
+              <Input value={search} onChange={e => setSearch(e.target.value)} placeholder="搜索题材…"
+                className="w-full pl-8" size="sm" />
             </div>
             <span className="text-xs text-muted">
               金牌 {tableQ.data.gold_count} · 共 {tableQ.data.rows.length} 题材 · 截至 {tableQ.data.as_of}
             </span>
           </div>
 
-          <div className="overflow-hidden rounded-xl border bg-base-200/60">
+          <div className="overflow-hidden rounded-card border border-border bg-surface">
             <table className="w-full text-sm">
               <thead>
-                <tr className="border-b border-base-300 bg-base/40 text-left text-[11px] uppercase tracking-wider text-muted">
+                <tr className="border-b border-border bg-base/40 text-left text-[11px] uppercase tracking-wider text-muted">
                   <th className="px-3 py-2">题材</th>
                   <th className="px-3 py-2">认证</th>
                   <th className="px-3 py-2 text-right">强度</th>
@@ -114,7 +116,7 @@ export default function Topics() {
               <tbody>
                 {rows.map(r => (
                   <Fragment key={r.member}>
-                    <tr className={cn('border-b border-base-300/60 hover:bg-base/40', expanded === r.member && 'bg-base/40')}>
+                    <tr className={cn('border-b border-border/60 hover:bg-base/40', expanded === r.member && 'bg-base/40')}>
                       <td className="px-3 py-2 font-medium">{r.member}</td>
                       <td className="px-3 py-2"><LevelBadge level={r.level} /></td>
                       <td className="px-3 py-2 text-right font-mono">{r.score.toFixed(0)}</td>
@@ -125,9 +127,9 @@ export default function Topics() {
                       <td className="px-3 py-2 font-mono">{r.leader_symbol ?? '—'}</td>
                       <td className="px-3 py-2 text-right font-mono">{r.member_count}</td>
                       <td className="px-3 py-2 text-right">
-                        <button className="btn btn-ghost btn-xs" onClick={() => setExpanded(expanded === r.member ? null : r.member)}>
+                        <Button variant="ghost" size="xs" onClick={() => setExpanded(expanded === r.member ? null : r.member)}>
                           {expanded === r.member ? '收起' : '成分股'}
-                        </button>
+                        </Button>
                       </td>
                     </tr>
                     {expanded === r.member && (
@@ -141,7 +143,7 @@ export default function Topics() {
                                 <span key={m.symbol} className={cn('inline-flex items-center gap-1 rounded-lg border px-2 py-1 text-xs',
                                   m.source === '身位股' ? 'border-yellow-500/40 bg-yellow-500/10 text-yellow-400'
                                     : m.source === '自定义' ? 'border-sky-500/40 bg-sky-500/10 text-sky-400'
-                                    : 'border-base-300 bg-base-300/50 text-foreground')}>
+                                    : 'border-border bg-elevated/50 text-foreground')}>
                                   {m.symbol}
                                   {m.source !== 'ext' && <span className="text-[9px] opacity-70">{m.source === '身位股' ? '身位' : '自'}</span>}
                                 </span>
@@ -152,11 +154,11 @@ export default function Topics() {
                             </div>
                             {/* OCR 导入 */}
                             <div className="flex flex-wrap items-center gap-2">
-                              <button className="btn btn-ghost btn-xs" onClick={() => { setOcrTopic(r.member); setOcrResult(null); setOcrCandidates([]) }}>
+                              <Button variant="ghost" size="xs" onClick={() => { setOcrTopic(r.member); setOcrResult(null); setOcrCandidates([]) }}>
                                 <FileImage className="size-3.5" /> OCR 导入成分
-                              </button>
+                              </Button>
                               {ocrTopic === r.member && (
-                                <label className="btn btn-primary btn-xs cursor-pointer">
+                                <label className="inline-flex h-6 cursor-pointer select-none items-center justify-center gap-1.5 rounded-btn bg-accent px-2 text-[11px] font-medium text-white transition-colors hover:bg-accent/90 disabled:opacity-50 disabled:pointer-events-none">
                                   <FileImage className="size-3.5" /> 上传截图
                                   <input type="file" accept="image/*" className="hidden"
                                     onChange={e => {
@@ -167,21 +169,21 @@ export default function Topics() {
                               )}
                               {ocrMut.isPending && ocrTopic === r.member && <Loader2 className="size-3 animate-spin text-muted" />}
                               {ocrResult && ocrTopic === r.member && (
-                                <div className="flex w-full flex-wrap items-center gap-2 rounded-lg border border-base-300 bg-base/40 p-2">
+                                <div className="flex w-full flex-wrap items-center gap-2 rounded-lg border border-border bg-base/40 p-2">
                                   <span className="text-xs text-muted">识别 {ocrResult.matched_count ?? 0} 只:</span>
                                   {(ocrResult.candidates ?? []).filter(c => c.matched).map(c => (
-                                    <label key={c.symbol} className="flex cursor-pointer items-center gap-1 rounded border border-base-300 bg-base-300/50 px-1.5 py-0.5 text-xs">
-                                      <input type="checkbox" className="checkbox checkbox-xs" checked={ocrCandidates.includes(c.symbol)}
+                                    <label key={c.symbol} className="flex cursor-pointer items-center gap-1 rounded border border-border bg-elevated/50 px-1.5 py-0.5 text-xs">
+                                      <input type="checkbox" className="h-3 w-3 accent-accent" checked={ocrCandidates.includes(c.symbol)}
                                         onChange={e => setOcrCandidates(prev => e.target.checked ? [...prev, c.symbol] : prev.filter(x => x !== c.symbol))} />
                                       {c.symbol} {c.name}
                                     </label>
                                   ))}
                                   <div className="ml-auto flex gap-1">
-                                    <button className="btn btn-ghost btn-xs" onClick={() => { setOcrResult(null); setOcrTopic(null) }}><X className="size-3" /> 取消</button>
-                                    <button className="btn btn-primary btn-xs" disabled={saveMut.isPending}
+                                    <Button variant="ghost" size="xs" onClick={() => { setOcrResult(null); setOcrTopic(null) }}><X className="size-3" /> 取消</Button>
+                                    <Button variant="primary" size="xs" disabled={saveMut.isPending}
                                       onClick={() => saveMut.mutate({ topic: r.member, symbols: [...new Set([...(membersQ.data?.members ?? []).map(m => m.symbol), ...ocrCandidates])] })}>
                                       <Check className="size-3" /> 保存
-                                    </button>
+                                    </Button>
                                   </div>
                                 </div>
                               )}

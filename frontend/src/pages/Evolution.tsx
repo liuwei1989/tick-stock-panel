@@ -37,7 +37,7 @@ function num(v: number | null | undefined, digits = 2): string {
 
 function toneClass(v: number | null | undefined): string {
   if (v == null || Number.isNaN(v) || v === 0) return 'text-muted'
-  return v > 0 ? 'text-emerald-400' : 'text-rose-400'
+  return v > 0 ? 'text-bull' : 'text-bear'
 }
 
 function RunStatus({ status }: { status: string }) {
@@ -45,7 +45,7 @@ function RunStatus({ status }: { status: string }) {
   return (
     <span className={cn(
       'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-medium',
-      ok ? 'bg-emerald-500/10 text-emerald-400' : 'bg-zinc-700/30 text-muted',
+      ok ? 'bg-accent/10 text-accent' : 'bg-elevated/40 text-muted',
     )}>
       {ok ? <Sparkles className="size-3" /> : <XCircle className="size-3" />}
       {ok ? '有推荐' : '无改进'}
@@ -55,7 +55,7 @@ function RunStatus({ status }: { status: string }) {
 
 function Stat({ label, value, cls }: { label: string; value: string; cls?: string }) {
   return (
-    <div className="min-w-[92px] rounded-lg border border-zinc-800/80 bg-zinc-900/50 px-2.5 py-1.5">
+    <div className="min-w-[92px] rounded-lg border border-border/80 bg-surface/50 px-2.5 py-1.5">
       <div className="text-[11px] text-muted">{label}</div>
       <div className={cn('truncate text-sm font-semibold', cls ?? 'text-foreground')}>{value}</div>
     </div>
@@ -73,11 +73,11 @@ function CandidateCard({ name, score, validate, wf, baseline, applied }: {
   return (
     <div className={cn(
       'flex flex-col gap-2 rounded-xl border p-3',
-      applied ? 'border-emerald-500/40 bg-emerald-500/5' : 'border-zinc-800 bg-zinc-900/40',
+      applied ? 'border-accent/40 bg-accent/5' : 'border-border bg-surface/40',
     )}>
       <div className="flex items-center justify-between">
         <span className="text-sm font-medium">{name}</span>
-        {applied && <span className="inline-flex items-center gap-1 rounded-full bg-emerald-500/15 px-2 py-0.5 text-[11px] font-medium text-emerald-400">
+        {applied && <span className="inline-flex items-center gap-1 rounded-full bg-accent/15 px-2 py-0.5 text-[11px] font-medium text-accent">
           <CheckCircle2 className="size-3" /> 已应用
         </span>}
       </div>
@@ -85,7 +85,7 @@ function CandidateCard({ name, score, validate, wf, baseline, applied }: {
         <Stat label="综合分" value={num(score)} />
         <Stat label="验证收益" value={pct(validate?.total_return)} cls={toneClass(validate?.total_return)} />
         <Stat label="胜率" value={pct(validate?.win_rate)} />
-        <Stat label="回撤" value={pct(validate?.max_drawdown)} cls="text-amber-400" />
+        <Stat label="回撤" value={pct(validate?.max_drawdown)} cls="text-warning" />
         <Stat label="盈亏比" value={num(validate?.profit_factor)} />
         <Stat label="交易数" value={String(validate?.n_trades ?? '—')} />
         <Stat label="稳定分" value={num(wf?.stability_score)} />
@@ -187,7 +187,7 @@ export default function Evolution() {
               qc.invalidateQueries({ queryKey: QK.evolutionRecommendations })
               qc.invalidateQueries({ queryKey: QK.evolutionApplied })
             }}
-            className="flex items-center gap-1 rounded-lg border border-zinc-800 px-2 py-1.5 text-sm hover:bg-zinc-900"
+            className="flex items-center gap-1 rounded-lg border border-border px-2 py-1.5 text-sm hover:bg-elevated"
           >
             <RefreshCw className="size-3.5" /> 刷新
           </button>
@@ -195,9 +195,9 @@ export default function Evolution() {
       />
 
       {/* 环境门控 */}
-      <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-4">
+      <div className="rounded-xl border border-border bg-surface/40 p-4">
         <div className="mb-3 flex items-center gap-2">
-          <ShieldCheck className="size-4 text-primary" />
+          <ShieldCheck className="size-4 text-accent" />
           <span className="text-sm font-semibold">环境门控建议</span>
           {g?.available && g.date && <span className="text-xs text-muted">· {g.date}</span>}
         </div>
@@ -214,12 +214,12 @@ export default function Evolution() {
               <span className={cn('text-lg font-bold', toneClass(g.regime?.score))}>{num(g.regime?.score, 0)}</span>
               <span className="text-xs text-muted">{g.regime?.state_label ?? g.regime?.state ?? ''} · {g.regime?.phase_label ?? g.regime?.phase ?? ''}</span>
             </div>
-            <div className="h-8 w-px bg-zinc-800" />
+            <div className="h-8 w-px bg-border" />
             <div className="flex flex-wrap gap-2">
               <Stat label="基线 min_score" value={String(g.default_params.min_score)} />
-              <Stat label="建议 min_score" value={String(g.applied_params.min_score)} cls="text-primary" />
+              <Stat label="建议 min_score" value={String(g.applied_params.min_score)} cls="text-accent" />
               <Stat label="基线 max_results" value={String(g.default_params.max_results)} />
-              <Stat label="建议 max_results" value={String(g.applied_params.max_results)} cls="text-primary" />
+              <Stat label="建议 max_results" value={String(g.applied_params.max_results)} cls="text-accent" />
             </div>
             <div className="w-full text-xs text-muted">{g.suggestion}</div>
           </div>
@@ -227,9 +227,9 @@ export default function Evolution() {
       </div>
 
       {/* 运行进化 */}
-      <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-4">
+      <div className="rounded-xl border border-border bg-surface/40 p-4">
         <div className="mb-3 flex items-center gap-2">
-          <FlaskConical className="size-4 text-primary" />
+          <FlaskConical className="size-4 text-accent" />
           <span className="text-sm font-semibold">运行一轮进化</span>
           <span className="text-xs text-muted">候选生成 + walk-forward 评估 + 门槛筛选, 持久化为推荐记录</span>
         </div>
@@ -239,7 +239,7 @@ export default function Evolution() {
             <select
               value={strategyId}
               onChange={(e) => setStrategyId(e.target.value)}
-              className="w-44 rounded-lg border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-sm outline-none"
+              className="w-44 rounded-lg border border-border bg-surface px-2 py-1.5 text-sm outline-none"
             >
               <option value="">选择策略…</option>
               {strategies.map((s) => (
@@ -251,29 +251,29 @@ export default function Evolution() {
             <span className="text-[11px] text-muted">训练天数</span>
             <input type="number" min={60} max={1000} value={trainDays}
               onChange={(e) => setTrainDays(Number(e.target.value) || 180)}
-              className="w-20 rounded-lg border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-sm outline-none" />
+              className="w-20 rounded-lg border border-border bg-surface px-2 py-1.5 text-sm outline-none" />
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-[11px] text-muted">验证天数</span>
             <input type="number" min={10} max={300} value={validateDays}
               onChange={(e) => setValidateDays(Number(e.target.value) || 30)}
-              className="w-20 rounded-lg border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-sm outline-none" />
+              className="w-20 rounded-lg border border-border bg-surface px-2 py-1.5 text-sm outline-none" />
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-[11px] text-muted">窗口数</span>
             <input type="number" min={1} max={10} value={windows}
               onChange={(e) => setWindows(Number(e.target.value) || 3)}
-              className="w-16 rounded-lg border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-sm outline-none" />
+              className="w-16 rounded-lg border border-border bg-surface px-2 py-1.5 text-sm outline-none" />
           </label>
           <label className="flex flex-col gap-1">
             <span className="text-[11px] text-muted">候选数</span>
             <input type="number" min={2} max={40} value={candidates}
               onChange={(e) => setCandidates(Number(e.target.value) || 12)}
-              className="w-16 rounded-lg border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-sm outline-none" />
+              className="w-16 rounded-lg border border-border bg-surface px-2 py-1.5 text-sm outline-none" />
           </label>
           <button
             onClick={() => setShowAdvanced(!showAdvanced)}
-            className="flex items-center gap-1 rounded-lg border border-zinc-800 px-2 py-1.5 text-xs text-muted hover:bg-zinc-900"
+            className="flex items-center gap-1 rounded-lg border border-border px-2 py-1.5 text-xs text-muted hover:bg-elevated"
           >
             {showAdvanced ? <ChevronUp className="size-3.5" /> : <ChevronDown className="size-3.5" />}
             高级
@@ -281,36 +281,36 @@ export default function Evolution() {
           <button
             onClick={() => run.mutate()}
             disabled={run.isPending || !strategyId}
-            className="flex items-center gap-1.5 rounded-lg bg-primary px-3 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
+            className="flex items-center gap-1.5 rounded-lg bg-accent px-3 py-1.5 text-sm font-medium text-white hover:opacity-90 disabled:opacity-50"
           >
             {run.isPending ? <Loader2 className="size-4 animate-spin" /> : <FlaskConical className="size-4" />}
             {run.isPending ? '进化中…' : '运行进化'}
           </button>
         </div>
         {showAdvanced && (
-          <div className="mt-3 flex flex-wrap items-end gap-3 border-t border-zinc-800 pt-3">
+          <div className="mt-3 flex flex-wrap items-end gap-3 border-t border-border pt-3">
             <label className="flex flex-col gap-1">
               <span className="text-[11px] text-muted">持仓数上限</span>
               <input type="number" min={1} max={20} value={maxPositions}
                 onChange={(e) => setMaxPositions(Number(e.target.value) || 5)}
-                className="w-20 rounded-lg border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-sm outline-none" />
+                className="w-20 rounded-lg border border-border bg-surface px-2 py-1.5 text-sm outline-none" />
             </label>
             <label className="flex flex-col gap-1">
               <span className="text-[11px] text-muted">持有天数</span>
               <input type="number" min={1} max={60} value={holdingDays}
                 onChange={(e) => setHoldingDays(Number(e.target.value) || 5)}
-                className="w-20 rounded-lg border border-zinc-800 bg-zinc-900 px-2 py-1.5 text-sm outline-none" />
+                className="w-20 rounded-lg border border-border bg-surface px-2 py-1.5 text-sm outline-none" />
             </label>
             <label className="flex items-center gap-1.5 text-sm">
               <input type="checkbox" checked={iterative}
                 onChange={(e) => setIterative(e.target.checked)}
-                className="size-4 accent-primary" />
+                className="size-4 accent-accent" />
               迭代种子 (复用上轮优秀参数)
             </label>
           </div>
         )}
         {lastRun && (
-          <div className="mt-3 rounded-lg border border-zinc-800 bg-zinc-950/60 p-3">
+          <div className="mt-3 rounded-lg border border-border bg-base p-3">
             <div className="mb-2 flex items-center gap-2">
               <RunStatus status={lastRun.status} />
               <span className="text-xs text-muted">{lastRun.run_id} · {lastRun.created_at}</span>
@@ -332,7 +332,7 @@ export default function Evolution() {
                   <button
                     onClick={() => apply.mutate(lastRun!.run_id)}
                     disabled={apply.isPending || !!applied[lastRun.strategy_id]}
-                    className="mt-2 flex items-center gap-1 rounded-lg bg-emerald-600/90 px-2.5 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+                    className="mt-2 flex items-center gap-1 rounded-lg bg-accent px-2.5 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
                   >
                     {apply.isPending ? <Loader2 className="size-3 animate-spin" /> : <CheckCircle2 className="size-3" />}
                     {applied[lastRun.strategy_id] ? '已应用' : '应用推荐'}
@@ -343,7 +343,7 @@ export default function Evolution() {
               )}
             </div>
             {lastRun.progress && lastRun.progress.length > 0 && (
-              <div className="mt-2 border-t border-zinc-800 pt-2">
+              <div className="mt-2 border-t border-border pt-2">
                 <div className="mb-1 text-[11px] text-muted">运行日志</div>
                 <div className="max-h-28 space-y-0.5 overflow-y-auto font-mono text-[11px] text-muted">
                   {lastRun.progress.map((line, i) => <div key={i}>{line}</div>)}
@@ -355,9 +355,9 @@ export default function Evolution() {
       </div>
 
       {/* 已应用参数 */}
-      <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-4">
+      <div className="rounded-xl border border-border bg-surface/40 p-4">
         <div className="mb-3 flex items-center gap-2">
-          <CheckCircle2 className="size-4 text-emerald-400" />
+          <CheckCircle2 className="size-4 text-accent" />
           <span className="text-sm font-semibold">已应用参数</span>
           <span className="text-xs text-muted">{Object.keys(applied).length} 个策略使用进化参数</span>
         </div>
@@ -366,13 +366,13 @@ export default function Evolution() {
         ) : (
           <div className="grid gap-2 md:grid-cols-2">
             {Object.entries(applied).map(([sid, o]) => (
-              <div key={sid} className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3">
+              <div key={sid} className="rounded-lg border border-border bg-base p-3">
                 <div className="flex items-center justify-between">
                   <span className="text-sm font-medium">{sid} · {o.name}</span>
                   <button
                     onClick={() => clear.mutate(sid)}
                     disabled={clear.isPending}
-                    className="flex items-center gap-1 rounded-lg border border-zinc-800 px-2 py-1 text-[11px] text-muted hover:bg-zinc-900 disabled:opacity-50"
+                    className="flex items-center gap-1 rounded-lg border border-border px-2 py-1 text-[11px] text-muted hover:bg-elevated disabled:opacity-50"
                   >
                     <Undo2 className="size-3" /> 撤销
                   </button>
@@ -388,9 +388,9 @@ export default function Evolution() {
       </div>
 
       {/* 推荐记录 */}
-      <div className="rounded-xl border border-zinc-800 bg-zinc-900/40 p-4">
+      <div className="rounded-xl border border-border bg-surface/40 p-4">
         <div className="mb-3 flex items-center gap-2">
-          <Sparkles className="size-4 text-primary" />
+          <Sparkles className="size-4 text-accent" />
           <span className="text-sm font-semibold">推荐记录</span>
           <span className="text-xs text-muted">{recsQ.data?.count ?? records.length} 条 (倒序)</span>
         </div>
@@ -402,7 +402,7 @@ export default function Evolution() {
         ) : (
           <div className="space-y-3">
             {records.map((r) => (
-              <div key={r.run_id} className="rounded-lg border border-zinc-800 bg-zinc-950/60 p-3">
+              <div key={r.run_id} className="rounded-lg border border-border bg-base p-3">
                 <div className="mb-2 flex flex-wrap items-center gap-2">
                   <RunStatus status={r.status} />
                   <span className="text-sm font-medium">{r.strategy_id}</span>
@@ -418,7 +418,7 @@ export default function Evolution() {
                       <button
                         onClick={() => apply.mutate(r.run_id)}
                         disabled={apply.isPending}
-                        className="flex w-fit items-center gap-1 rounded-lg bg-emerald-600/90 px-2.5 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
+                        className="flex w-fit items-center gap-1 rounded-lg bg-accent px-2.5 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-50"
                       >
                         {apply.isPending ? <Loader2 className="size-3 animate-spin" /> : <CheckCircle2 className="size-3" />}
                         应用此推荐

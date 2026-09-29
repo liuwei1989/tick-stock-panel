@@ -99,7 +99,7 @@ def test_cockpit_api_overview(tmp_path):
     assert resp.status_code == 200
     d = resp.json()
     assert d["status"] == "attention"
-    assert len(d["health"]["layers"]) == 11
+    assert len(d["health"]["layers"]) == 14
 
 
 def test_cockpit_full_data_alerts(tmp_path):

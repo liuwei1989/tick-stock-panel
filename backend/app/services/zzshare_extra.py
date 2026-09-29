@@ -296,6 +296,74 @@ def sync_concepts(data_dir: Path | None = None, top_n: int = 30,
     return {"date": latest, "rows": len(df), "plates": plates_done}
 
 
+# ───────────────────────── 人气/研报/监管 ─────────────────────────
+
+def sync_hot(data_dir: Path | None = None, days: int = 3,
+             progress: Progress | None = None) -> dict:
+    """同步同花顺热搜 TOP → data/ths_hot/{date}.json。"""
+    d = data_dir or _data_dir()
+    out = d / "ths_hot"
+    out.mkdir(parents=True, exist_ok=True)
+    trade_days = list_trade_days(days)[-days:]
+    written, total = 0, 0
+    for day in trade_days:
+        day_file = out / f"{day}.json"
+        if day_file.exists():
+            continue
+        date1 = f"{day[:4]}-{day[4:6]}-{day[6:]}"
+        hot = _call_shortcut("ths_hot_top", date1=date1, top_n=20) or []
+        day_file.write_text(json.dumps({"date": day, "hot": hot},
+                                       ensure_ascii=False, indent=1),
+                            encoding="utf-8")
+        written += 1
+        total += len(hot)
+        _emit(progress, f"[hot] {day} 热搜 {len(hot)} 条")
+        time.sleep(1)
+    return {"days": len(trade_days), "written": written, "rows": total}
+
+
+def sync_ai_reports(data_dir: Path | None = None,
+                    progress: Progress | None = None) -> dict:
+    """同步最新 AI 盘前/收盘报告列表 → data/ai_reports/latest.json。"""
+    d = data_dir or _data_dir()
+    out = d / "ai_reports"
+    out.mkdir(parents=True, exist_ok=True)
+    raw = _call_shortcut("ai_report_list", type=0, page=1, page_size=10) or {}
+    items = raw.get("items") if isinstance(raw, dict) else raw
+    if not items:
+        return {"rows": 0}
+    target = out / "latest.json"
+    target.write_text(json.dumps({"items": items}, ensure_ascii=False, indent=1),
+                      encoding="utf-8")
+    _emit(progress, f"[ai_report] {len(items)} 篇最新报告")
+    return {"rows": len(items)}
+
+
+def sync_movement(data_dir: Path | None = None, days: int = 3,
+                  progress: Progress | None = None) -> dict:
+    """同步涨幅触发监管预警 → data/movement_alerts/{date}.json。"""
+    d = data_dir or _data_dir()
+    out = d / "movement_alerts"
+    out.mkdir(parents=True, exist_ok=True)
+    trade_days = list_trade_days(days)[-days:]
+    written, total = 0, 0
+    for day in trade_days:
+        day_file = out / f"{day}.json"
+        if day_file.exists():
+            continue
+        date1 = f"{day[:4]}-{day[4:6]}-{day[6:]}"
+        alerts = _call_shortcut("movement_alerts", date1=date1, type=0,
+                                limit=30, is_real=1) or []
+        day_file.write_text(json.dumps({"date": day, "alerts": alerts},
+                                       ensure_ascii=False, indent=1),
+                            encoding="utf-8")
+        written += 1
+        total += len(alerts)
+        _emit(progress, f"[movement] {day} 预警 {len(alerts)} 条")
+        time.sleep(1)
+    return {"days": len(trade_days), "written": written, "rows": total}
+
+
 # ───────────────────────── 驾驶舱摘要 ─────────────────────────
 
 def topics_summary(data_dir: Path) -> dict:
@@ -368,6 +436,65 @@ def lhb_summary(data_dir: Path) -> dict:
             "top_net_buy": net_buy[:3]}
 
 
+def hot_summary(data_dir: Path) -> dict:
+    """最新同花顺热搜 TOP (供驾驶舱): 人气龙头 + 排名变化。"""
+    out = data_dir / "ths_hot"
+    if not out.exists():
+        return {"available": False}
+    files = sorted(out.glob("*.json"))
+    if not files:
+        return {"available": False}
+    latest = json.loads(files[-1].read_text(encoding="utf-8"))
+    hot = latest.get("hot", [])
+    top = []
+    for h in hot[:6]:
+        top.append({"name": h.get("symbol_name"), "code": str(h.get("symbol_code"))[-6:],
+                    "rank": h.get("rank"), "rank_diff": h.get("rank_diff"),
+                    "last_pct": h.get("last_pct")})
+    return {"available": True, "date": latest.get("date"), "top": top}
+
+
+def ai_reports_summary(data_dir: Path) -> dict:
+    """最新 AI 盘前/收盘报告标题 (供驾驶舱/盘前计划参考)。"""
+    f = data_dir / "ai_reports" / "latest.json"
+    if not f.exists():
+        return {"available": False}
+    try:
+        data = json.loads(f.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {"available": False}
+    items = data.get("items", [])
+    return {"available": True, "count": len(items),
+            "titles": [{"title": i.get("title"), "concepts": i.get("concepts"),
+                        "time": i.get("created_time")} for i in items[:3]]}
+
+
+def movement_summary(data_dir: Path) -> dict:
+    """最新监管预警: 触发监管个股及风险提示。"""
+    out = data_dir / "movement_alerts"
+    if not out.exists():
+        return {"available": False}
+    files = sorted(out.glob("*.json"))
+    if not files:
+        return {"available": False}
+    # 取最近有预警数据的日 (当日可能接口空/限流)
+    latest, alerts = None, []
+    for f in reversed(files):
+        data = json.loads(f.read_text(encoding="utf-8"))
+        if data.get("alerts"):
+            latest, alerts = data, data["alerts"]
+            break
+    if latest is None:
+        latest = json.loads(files[-1].read_text(encoding="utf-8"))
+        alerts = latest.get("alerts", [])
+    items = []
+    for a in alerts[:5]:
+        items.append({"name": a.get("symbol_name"), "code": str(a.get("symbol_code"))[-6:],
+                      "change_rate": a.get("px_change_rate"), "rank": a.get("rank")})
+    return {"available": True, "date": latest.get("date"), "count": len(alerts),
+            "top": items}
+
+
 def sentiment_summary(data_dir: Path) -> dict:
     """市场情绪 K 线最新值 + 与 regime 涨停家数的交叉核验。"""
     p = data_dir / "sentiment" / "part.parquet"
@@ -432,6 +559,9 @@ def main() -> None:
     parser.add_argument("--lhb", action="store_true", help="同步龙虎榜")
     parser.add_argument("--sentiment", action="store_true", help="同步情绪 K 线")
     parser.add_argument("--concepts", action="store_true", help="同步概念成分 (主线认证)")
+    parser.add_argument("--hot", action="store_true", help="同步同花顺热搜")
+    parser.add_argument("--ai-reports", action="store_true", help="同步 AI 报告")
+    parser.add_argument("--movement", action="store_true", help="同步监管预警")
     parser.add_argument("--all", action="store_true", help="全部同步")
     parser.add_argument("--days", type=int, default=5, help="同步最近 N 个交易日 (情绪默认 30)")
     parser.add_argument("--data-dir", type=str, default=None)
@@ -447,6 +577,12 @@ def main() -> None:
     results = {}
     if args.all or args.concepts:
         results["concepts"] = sync_concepts(d, progress=_p)
+    if args.all or args.hot:
+        results["hot"] = sync_hot(d, days=args.days, progress=_p)
+    if args.all or args.ai_reports:
+        results["ai_reports"] = sync_ai_reports(d, progress=_p)
+    if args.all or args.movement:
+        results["movement"] = sync_movement(d, days=args.days, progress=_p)
     if args.all or args.topics:
         results["topics"] = sync_topics(d, days=args.days, progress=_p)
     if args.all or args.uplimit:

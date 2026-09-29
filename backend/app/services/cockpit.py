@@ -57,6 +57,9 @@ def data_health(data_dir: Path) -> dict:
         ("uplimit", "涨停复盘", base / "uplimit"),
         ("lhb", "龙虎榜", base / "lhb"),
         ("sentiment", "情绪K线", base / "sentiment"),
+        ("ths_hot", "人气热搜", base / "ths_hot"),
+        ("ai_reports", "AI研报", base / "ai_reports"),
+        ("movement_alerts", "监管预警", base / "movement_alerts"),
     ]
     for key, label, path in specs:
         if path.is_dir():
@@ -219,6 +222,9 @@ def _zzshare_summary(data_dir: Path) -> dict:
         "uplimit": zzshare_extra.uplimit_summary(data_dir),
         "lhb": zzshare_extra.lhb_summary(data_dir),
         "sentiment": zzshare_extra.sentiment_summary(data_dir),
+        "hot": zzshare_extra.hot_summary(data_dir),
+        "ai_reports": zzshare_extra.ai_reports_summary(data_dir),
+        "movement": zzshare_extra.movement_summary(data_dir),
     }
 
 

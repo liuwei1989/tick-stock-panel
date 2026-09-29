@@ -91,6 +91,37 @@ def test_sentiment_crosscheck_with_regime():
     assert "date" in r and "sentiment_pct" in r and "limit_up" in r
 
 
+def test_hot_ai_movement_summaries():
+    """第三批: 人气热搜/AI研报/监管预警摘要结构完整。"""
+    h = zzshare_extra.hot_summary(settings.data_dir)
+    assert "available" in h
+    if h["available"]:
+        assert h["top"] and h["top"][0]["name"]
+        assert h["date"]
+
+    ai = zzshare_extra.ai_reports_summary(settings.data_dir)
+    assert "available" in ai
+    if ai["available"]:
+        assert ai["count"] > 0
+        assert ai["titles"][0]["title"]
+
+    mv = zzshare_extra.movement_summary(settings.data_dir)
+    assert "available" in mv
+    if mv["available"]:
+        assert "count" in mv and "top" in mv
+
+
+def test_cockpit_zzshare_7_blocks():
+    """驾驶舱 zzshare 区块扩至 7 块, 健康层 14 层。"""
+    r = cockpit_overview(settings.data_dir)
+    zz = r["zzshare"]
+    for key in ("topics", "uplimit", "lhb", "sentiment", "hot", "ai_reports", "movement"):
+        assert key in zz
+    keys = [l["key"] for l in r["health"]["layers"]]
+    for key in ("ths_hot", "ai_reports", "movement_alerts"):
+        assert key in keys
+
+
 def test_topic_rank_files_are_json():
     """落盘文件: topic_rank/uplimit/lhb 均为合法 JSON 且结构完整。"""
     d = settings.data_dir

@@ -1112,9 +1112,13 @@ class MonitorRuleEngine:
         source = rtype
 
         events: list[dict] = []
-        for ev_type, sym, name, price, pct, hit_sigs in hit_rows:
-            # cooldown 键包含事件类型, 同股不同策略事件互不压制。
+        for hit_row in hit_rows:
+            ev_type, sym, name, price, pct, hit_sigs = hit_row[:6]
             is_batch = sym == "_batch"
+            payload = hit_row[6] if len(hit_row) > 6 else None
+            items = payload if is_batch else None
+            raw_price = payload if not is_batch else None
+            # cooldown 键包含事件类型, 同股不同策略事件互不压制。
             key_symbol = f"_{ev_type}_batch" if is_batch else sym
             key = (rule["id"], key_symbol, ev_type)
             last = self._last_fire.get(key)
@@ -1146,8 +1150,10 @@ class MonitorRuleEngine:
                 "name": resolved_name,
                 "message": message,
                 "price": price,
+                "raw_price": raw_price,
                 "change_pct": pct,
                 "signals": hit_sigs,
+                "items": items,
                 "severity": severity,
                 # 触发条件快照 (signal/price/market 类型): 用于触发记录展示
                 # 「命中了什么条件」。strategy 类型靠策略选股池 diff, 不写条件。
@@ -1198,7 +1204,7 @@ class MonitorRuleEngine:
 
         返回 [(event_type, symbol, name, price, pct, signals)]
         event_type: buy_signal | sell_signal | pool_entry | pool_exit
-        同类事件超过 5 只时合并为一条批量事件 (symbol="_batch")
+        同类事件超过 5 只时合并为一条批量事件 (symbol="_batch"),同时保留逐标的数据供模拟盘执行
         """
         if self._strategy_engine is None:
             return []
@@ -1354,7 +1360,12 @@ class MonitorRuleEngine:
         row_map: dict[str, dict] = {r["symbol"]: r for r in result.rows}
         try:
             for row in df.iter_rows(named=True):
-                row_map.setdefault(str(row.get("symbol", "")), row)
+                symbol = str(row.get("symbol", ""))
+                if symbol in row_map:
+                    if row_map[symbol].get("raw_close") is None:
+                        row_map[symbol]["raw_close"] = row.get("raw_close")
+                else:
+                    row_map[symbol] = row
         except Exception:
             pass
 
@@ -1410,7 +1421,20 @@ class MonitorRuleEngine:
                     for symbol in symbol_list
                     for signal in signal_map.get(event_type, {}).get(symbol, [])
                 })
-                results.append((event_type, "_batch", message, None, None, hit_signals))
+                items = []
+                for symbol in symbol_list:
+                    row = row_map.get(symbol, {})
+                    price = row.get("close")
+                    if isinstance(price, (int, float)) and math.isfinite(price) and price > 0:
+                        items.append({
+                            "symbol": symbol,
+                            "name": row.get("name") or self._name_map.get(symbol, symbol),
+                            "price": float(price),
+                            "raw_price": float(row.get("raw_close") or price),
+                            "change_pct": row.get("change_pct"),
+                            "signals": signal_map.get(event_type, {}).get(symbol, []),
+                        })
+                results.append((event_type, "_batch", message, None, None, hit_signals, items))
                 continue
             for symbol in symbol_list:
                 row = row_map.get(symbol, {})
@@ -1422,6 +1446,7 @@ class MonitorRuleEngine:
                     row.get("close"),
                     row.get("change_pct"),
                     signal_map.get(event_type, {}).get(symbol, []),
+                    row.get("raw_close") or row.get("close"),
                 ))
 
         return results

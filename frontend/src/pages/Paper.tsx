@@ -877,7 +877,9 @@ function AutoRulesPanel({ acc }: { acc: string }) {
               <span className="w-28 shrink-0 truncate font-medium">{r.name}</span>
               <span className="w-20 shrink-0 text-muted">{r.match_kind === 'strategy' ? '跟策略' : '跟规则'}</span>
               <span className="w-32 shrink-0 truncate font-mono text-[11px] text-muted" title={r.match_id}>{r.match_id}</span>
-              <span className={cn('w-8 shrink-0 font-medium', r.side === 'buy' ? 'text-bull' : 'text-bear')}>{r.side === 'buy' ? '买' : '卖'}</span>
+              <span className={cn('w-28 shrink-0 truncate font-medium', (r.event_sides?.buy_signal ?? r.side) === 'buy' ? 'text-bull' : 'text-bear')}>
+                {r.match_kind === 'strategy' ? (r.event_types ?? ['buy_signal', 'sell_signal']).map(t => `${t === 'buy_signal' ? '买信号' : t === 'sell_signal' ? '卖信号' : t === 'pool_entry' ? '入池' : '出池'}:${r.event_sides?.[t] === 'sell' ? '卖' : '买'}`).join(' / ') : (r.side === 'buy' ? '买入' : '卖出')}
+              </span>
               <span className="w-24 shrink-0 font-mono text-[11px] text-muted">
                 {r.size_mode === 'fixed_amount' ? fmtMoney(r.size_value, 0) : `${r.size_value}% 权益`}
               </span>
@@ -905,6 +907,10 @@ function AutoRuleForm({ acc, onDone, onCancel }: { acc: string; onDone: () => vo
   const [matchKind, setMatchKind] = useState<'strategy' | 'rule'>('strategy')
   const [matchId, setMatchId] = useState('')
   const [side, setSide] = useState<'buy' | 'sell'>('buy')
+  const [eventTypes, setEventTypes] = useState<Array<'buy_signal' | 'sell_signal' | 'pool_entry' | 'pool_exit'>>(['buy_signal', 'sell_signal'])
+  const [eventSides, setEventSides] = useState<Record<'buy_signal' | 'sell_signal' | 'pool_entry' | 'pool_exit', 'buy' | 'sell'>>({
+    buy_signal: 'buy', sell_signal: 'sell', pool_entry: 'buy', pool_exit: 'sell',
+  })
   const [sizeMode, setSizeMode] = useState<'fixed_amount' | 'pct_equity'>('fixed_amount')
   const [sizeValue, setSizeValue] = useState('10000')
   const [orderType, setOrderType] = useState<'market' | 'next_open' | 'close'>('next_open')
@@ -918,6 +924,7 @@ function AutoRuleForm({ acc, onDone, onCancel }: { acc: string; onDone: () => vo
         match_kind: matchKind,
         match_id: matchId.trim(),
         side,
+        ...(matchKind === 'strategy' ? { event_types: eventTypes, event_sides: Object.fromEntries(eventTypes.map(t => [t, eventSides[t]])) } : {}),
         size_mode: sizeMode,
         size_value: Number(sizeValue),
         order_type: orderType,
@@ -928,7 +935,7 @@ function AutoRuleForm({ acc, onDone, onCancel }: { acc: string; onDone: () => vo
     onError: e => setMsg(String((e as Error).message)),
   })
 
-  const valid = name.trim() && matchId.trim() && Number(sizeValue) > 0
+  const valid = name.trim() && matchId.trim() && Number(sizeValue) > 0 && (matchKind !== 'strategy' || eventTypes.length > 0)
 
   // ID 联想: 跟策略 → 策略引擎列表; 跟监控规则 → 监控规则列表。本地按中文名/ID 过滤。
   const strategiesQ = useQuery({
@@ -996,7 +1003,7 @@ function AutoRuleForm({ acc, onDone, onCancel }: { acc: string; onDone: () => vo
             className="mt-1 w-full rounded-btn border border-border bg-base px-3 py-1.5 font-mono text-sm outline-none focus:border-accent/50"
           />
         </div>
-        <div>
+        {matchKind === 'rule' && <div>
           <label className="text-[11px] text-muted">方向</label>
           <div className="mt-1 flex gap-1.5">
             {(['buy', 'sell'] as const).map(sd => (
@@ -1007,7 +1014,28 @@ function AutoRuleForm({ acc, onDone, onCancel }: { acc: string; onDone: () => vo
               </button>
             ))}
           </div>
-        </div>
+        </div>}
+        {matchKind === 'strategy' && (
+          <div className="md:col-span-2">
+            <label className="text-[11px] text-muted">策略事件及模拟下单方向</label>
+            <div className="mt-1 grid grid-cols-2 gap-2 md:grid-cols-4">
+              {([
+                ['buy_signal', '买入信号'], ['sell_signal', '卖出信号'],
+                ['pool_entry', '进入选股池'], ['pool_exit', '移出选股池'],
+              ] as const).map(([type, label]) => {
+                const checked = eventTypes.includes(type)
+                return <label key={type} className={cn('flex items-center gap-2 rounded-btn border px-2 py-1.5 text-[11px]', checked ? 'border-accent/40 bg-accent/5' : 'border-border')}>
+                  <input type="checkbox" checked={checked} onChange={e => setEventTypes(current => e.target.checked ? [...current, type] : current.filter(t => t !== type))} />
+                  <span className="min-w-0 flex-1 truncate">{label}</span>
+                  <select aria-label={`${label}方向`} disabled={!checked} value={eventSides[type]} onChange={e => setEventSides(current => ({ ...current, [type]: e.target.value as 'buy' | 'sell' }))} className="rounded border border-border bg-base px-1 py-0.5 disabled:opacity-40">
+                    <option value="buy">买</option><option value="sell">卖</option>
+                  </select>
+                </label>
+              })}
+            </div>
+            {eventTypes.length === 0 && <div className="mt-1 text-[11px] text-danger">至少选择一个事件</div>}
+          </div>
+        )}
         <div>
           <label className="text-[11px] text-muted">仓位</label>
           <div className="mt-1 flex gap-1.5">

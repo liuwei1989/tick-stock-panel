@@ -216,6 +216,35 @@ def test_strategy_sell_and_pool_exit_are_independent_events():
     }
 
 
+def test_strategy_batch_event_keeps_per_symbol_prices_for_paper_trading():
+    day = date(2026, 7, 24)
+    symbols = [f"S{i}" for i in range(6)]
+    quotes = pl.DataFrame({
+        "symbol": symbols,
+        "close": [10.0 + i for i in range(6)],
+        "raw_close": [11.0 + i for i in range(6)],
+        "change_pct": [0.01] * 6,
+    })
+    engine = MonitorRuleEngine()
+    engine.set_strategy_engine(_SequenceStrategyEngine([
+        _result(day),
+        _result(day, buys=tuple(symbols)),
+    ]))
+    engine.set_rules([_rule("buy_signal")])
+
+    with patch("app.strategy.monitor.time.time", return_value=100):
+        assert engine.evaluate(quotes) == []
+        events = engine.evaluate(quotes)
+
+    assert len(events) == 1
+    event = events[0]
+    assert event["symbol"] == ""
+    assert len(event["items"]) == 6
+    assert event["items"][0]["symbol"] == "S0"
+    assert event["items"][0]["price"] == 10.0
+    assert event["items"][0]["raw_price"] == 11.0
+
+
 def test_strategy_rule_reload_preserves_state_and_semantic_edit_resets_it():
     day = date(2026, 7, 24)
     engine = MonitorRuleEngine()

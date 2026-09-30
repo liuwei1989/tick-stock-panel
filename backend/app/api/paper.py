@@ -285,11 +285,31 @@ class AutoRuleModel(BaseModel):
     match_kind: str                 # strategy / rule
     match_id: str
     side: str = "buy"
+    event_types: list[str] | None = None
+    event_sides: dict[str, str] | None = None
     size_mode: str = "fixed_amount" # fixed_amount / pct_equity
     size_value: float
     order_type: str = "next_open"
     cooldown_days: int = 5
     enabled: bool = True
+
+
+def _sync_auto_monitors(request: Request) -> None:
+    from app.services import preferences
+    from app.strategy import paper_auto
+
+    strategy_engine = getattr(request.app.state, "strategy_engine", None)
+    monitor_engine = getattr(request.app.state, "monitor_engine", None)
+    if strategy_engine is None:
+        return
+    data_dir = _data_dir(request)
+    paper_auto.sync_strategy_monitors(
+        data_dir,
+        strategy_engine,
+        monitor_engine,
+        preference_enabled=preferences.get_strategy_monitor_enabled(),
+        preference_ids=preferences.get_strategy_monitor_ids(),
+    )
 
 
 @router.get("/auto_rules")
@@ -302,7 +322,16 @@ def list_auto_rules(request: Request, account: str = Query(paper.DEFAULT_ACCOUNT
 def create_auto_rule(request: Request, body: AutoRuleModel, account: str = Query(paper.DEFAULT_ACCOUNT_ID)):
     from app.strategy import paper_auto
     try:
-        rule = paper_auto.create_auto_rule(_data_dir(request), body.model_dump(), _acc(request, account))
+        account_id = _acc(request, account)
+        if paper.get_account(_data_dir(request), account_id) is None:
+            raise ValueError("请先初始化模拟账户")
+        if body.match_kind == "strategy":
+            strategy_engine = getattr(request.app.state, "strategy_engine", None)
+            known_ids = {str(s.get("id", "")) for s in strategy_engine.list_strategies()} if strategy_engine else set()
+            if body.match_id not in known_ids:
+                raise ValueError(f"策略不存在: {body.match_id}")
+        rule = paper_auto.create_auto_rule(_data_dir(request), body.model_dump(exclude_none=True), account_id)
+        _sync_auto_monitors(request)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return {"rule": rule}
@@ -314,6 +343,7 @@ def set_auto_rule_enabled(request: Request, rule_id: str, enabled: bool, account
     rule = paper_auto.set_enabled(_data_dir(request), rule_id, enabled, _acc(request, account))
     if rule is None:
         raise HTTPException(status_code=404, detail=f"规则不存在: {rule_id}")
+    _sync_auto_monitors(request)
     return {"rule": rule}
 
 
@@ -322,4 +352,5 @@ def delete_auto_rule(request: Request, rule_id: str, account: str = Query(paper.
     from app.strategy import paper_auto
     if not paper_auto.delete_auto_rule(_data_dir(request), rule_id, _acc(request, account)):
         raise HTTPException(status_code=404, detail=f"规则不存在: {rule_id}")
+    _sync_auto_monitors(request)
     return {"ok": True}

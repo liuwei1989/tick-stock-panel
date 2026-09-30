@@ -469,6 +469,39 @@ def test_auto_trigger_non_matching_events_ignored(tmp_path):
     assert paper_auto.on_rule_events(tmp_path, [ev1, ev2, ev3]) == []
 
 
+def test_auto_trigger_expands_strategy_batch_and_uses_event_side(tmp_path):
+    from app.strategy import paper_auto
+    day = date(2026, 9, 24)
+    _write_daily(tmp_path, [(day - timedelta(days=1), 10.0, 10.0)])
+    _cap_account(tmp_path)
+    paper_auto.create_auto_rule(tmp_path, _auto_rule(
+        event_types=["buy_signal", "sell_signal"],
+        side="sell",
+        event_sides={"buy_signal": "sell", "sell_signal": "buy"},
+    ))
+
+    event = {
+        "source": "strategy", "strategy_id": "strat_1", "type": "sell_signal",
+        "items": [{"symbol": SYM, "price": 10.5, "raw_price": 10.0}],
+    }
+    orders = paper_auto.on_rule_events(tmp_path, [event])
+    assert len(orders) == 1
+    assert orders[0]["symbol"] == SYM
+    assert orders[0]["side"] == "buy"
+    assert orders[0]["ref_price"] == 10.0
+
+
+def test_strategy_pool_events_are_not_traded_without_explicit_mapping(tmp_path):
+    from app.strategy import paper_auto
+    _cap_account(tmp_path)
+    paper_auto.create_auto_rule(tmp_path, _auto_rule())
+    event = {
+        "source": "strategy", "strategy_id": "strat_1", "type": "pool_exit",
+        "symbol": SYM, "price": 10.0,
+    }
+    assert paper_auto.on_rule_events(tmp_path, [event]) == []
+
+
 def test_auto_rule_disabled_not_triggered(tmp_path):
     from app.strategy import paper_auto
     _cap_account(tmp_path)

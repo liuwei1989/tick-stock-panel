@@ -332,7 +332,7 @@ async def _application_lifespan(app: FastAPI):
 
     # 通用监控规则引擎: 启动时 reload 规则到内存态 (修复重启后告警失效)
     from app.strategy.monitor import MonitorRuleEngine
-    from app.strategy import monitor_rules as mr_store
+    from app.strategy import monitor_rules as mr_store, paper_auto
     from app.services import preferences
     from app.services.sector_monitor import SectorMonitorService
     monitor_engine = MonitorRuleEngine()
@@ -348,12 +348,13 @@ async def _application_lifespan(app: FastAPI):
 
     # 自动迁移: 把旧 strategy_monitor_ids 同步为 type=strategy 规则 (统一到监控页)
     try:
-        if preferences.get_strategy_monitor_enabled():
-            ids = preferences.get_strategy_monitor_ids()
-            if ids:
-                names = {s["id"]: s["name"] for s in strategy_engine.list_strategies()}
-                mr_store.migrate_strategy_monitors(store.data_dir, ids, names)
-                logger.info("strategy monitor migrated: %d strategies", len(ids))
+        paper_auto.sync_strategy_monitors(
+            store.data_dir,
+            strategy_engine,
+            monitor_engine,
+            preference_enabled=preferences.get_strategy_monitor_enabled(),
+            preference_ids=preferences.get_strategy_monitor_ids(),
+        )
     except Exception as e:  # noqa: BLE001
         logger.warning("strategy monitor migration failed: %s", e)
 

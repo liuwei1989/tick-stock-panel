@@ -27,6 +27,10 @@ from app.strategy import paper
 
 logger = logging.getLogger(__name__)
 
+STRATEGY_EVENT_TYPES = {"buy_signal", "sell_signal", "pool_entry", "pool_exit"}
+DEFAULT_STRATEGY_EVENT_SIDES = {"buy_signal": "buy", "sell_signal": "sell"}
+DEFAULT_STRATEGY_EVENTS = ["buy_signal", "sell_signal"]
+
 
 def _dir(data_dir: Path, account_id: str) -> Path:
     d = paper._root(data_dir, account_id) / "auto_rules"
@@ -52,6 +56,26 @@ def validate_rule(rule: dict) -> None:
         raise ValueError("match_id 不能为空")
     if rule.get("side") not in ("buy", "sell"):
         raise ValueError(f"side 非法: {rule.get('side')!r}")
+    event_types = rule.get("event_types")
+    if event_types is not None:
+        if rule.get("match_kind") != "strategy":
+            raise ValueError("event_types 仅适用于策略规则")
+        if not isinstance(event_types, list) or not event_types:
+            raise ValueError("策略规则至少选择一个触发事件")
+        if set(event_types) - STRATEGY_EVENT_TYPES or len(set(event_types)) != len(event_types):
+            raise ValueError("event_types 包含非法策略事件")
+    event_sides = rule.get("event_sides")
+    if event_sides is not None:
+        if rule.get("match_kind") != "strategy" or not isinstance(event_sides, dict):
+            raise ValueError("event_sides 仅适用于策略规则")
+        if set(event_sides) - STRATEGY_EVENT_TYPES or (
+            event_types is not None and set(event_sides) != set(event_types)
+        ) or any(
+            side not in ("buy", "sell") for side in event_sides.values()
+        ):
+            raise ValueError("策略事件方向配置非法")
+        if not event_sides:
+            raise ValueError("策略规则至少配置一个事件方向")
     if rule.get("size_mode") not in ("fixed_amount", "pct_equity"):
         raise ValueError(f"size_mode 非法: {rule.get('size_mode')!r}")
     value = rule.get("size_value")
@@ -75,6 +99,11 @@ def normalize_rule(rule: dict) -> dict:
     d.setdefault("order_type", "next_open")
     d.setdefault("cooldown_days", 5)
     d.setdefault("enabled", True)
+    if d.get("match_kind") == "strategy":
+        if d.get("event_types") is None:
+            d["event_types"] = list(DEFAULT_STRATEGY_EVENTS)
+        if d.get("event_sides") is None:
+            d["event_sides"] = dict(DEFAULT_STRATEGY_EVENT_SIDES)
     d.setdefault("created_at", _now_iso())
     return d
 
@@ -123,8 +152,81 @@ def set_enabled(data_dir: Path, rule_id: str, enabled: bool, account_id: str = p
 
 def _matches(rule: dict, ev: dict) -> bool:
     if rule["match_kind"] == "strategy":
-        return ev.get("source") == "strategy" and ev.get("strategy_id") == rule["match_id"]
+        event_type = ev.get("type")
+        return (
+            ev.get("source") == "strategy"
+            and ev.get("strategy_id") == rule["match_id"]
+            # Historical callers may send strategy events without a type. Keep their
+            # configured static side behavior; the monitor engine always supplies type.
+            and (not event_type or not rule.get("event_types") or event_type in rule["event_types"])
+            and (not event_type or not rule.get("event_sides") or event_type in rule["event_sides"])
+        )
     return ev.get("rule_id") == rule["match_id"]
+
+
+def _expand_event(ev: dict) -> list[dict]:
+    """展开策略监控的批量事件,保留每个标的的价格后才能逐笔模拟下单。"""
+    items = ev.get("items")
+    if ev.get("source") != "strategy" or not isinstance(items, list):
+        return [ev]
+    return [
+        {**ev, **item, "type": ev.get("type"), "source": "strategy",
+         "strategy_id": ev.get("strategy_id"), "rule_id": ev.get("rule_id")}
+        for item in items
+        if isinstance(item, dict)
+    ]
+
+
+def strategy_monitor_requirements(data_dir: Path) -> dict[str, set[str]]:
+    """返回启用的模拟盘策略规则需要监听的事件类型。"""
+    required: dict[str, set[str]] = {}
+    for account_id in paper.list_account_ids(data_dir):
+        for rule in load_auto_rules(data_dir, account_id, enabled_only=True):
+            if rule.get("match_kind") != "strategy":
+                continue
+            sid = str(rule.get("match_id", ""))
+            events = rule.get("event_types") or STRATEGY_EVENT_TYPES
+            required.setdefault(sid, set()).update(events)
+    return required
+
+
+def sync_strategy_monitors(
+    data_dir: Path,
+    strategy_engine,
+    monitor_engine,
+    *,
+    preference_enabled: bool,
+    preference_ids: list[str],
+) -> None:
+    """把普通策略监控与启用的模拟盘跟单策略合并到监控引擎。"""
+    from app.strategy import monitor_rules as mr_store
+
+    auto_requirements = strategy_monitor_requirements(data_dir)
+    requested_ids = set(preference_ids if preference_enabled else []) | set(auto_requirements)
+    strategies = strategy_engine.list_strategies()
+    known_ids = {str(s.get("id", "")) for s in strategies}
+    requested_ids &= known_ids
+    names = {str(s.get("id", "")): str(s.get("name") or s.get("id", "")) for s in strategies}
+    mr_store.migrate_strategy_monitors(data_dir, sorted(requested_ids), names)
+
+    for sid, event_types in auto_requirements.items():
+        if sid not in requested_ids:
+            continue
+        rule = mr_store.load_one(data_dir, mr_store.strategy_rule_id(sid))
+        if rule is None:
+            continue
+        base_events = set(rule.get("_paper_auto_notify_events_base") or rule.get("notify_events") or [])
+        rule["_paper_auto_notify_events_base"] = sorted(base_events)
+        rule["notify_events"] = sorted(base_events | event_types)
+        mr_store.save_one(data_dir, rule)
+    for rule in mr_store.load_all(data_dir):
+        sid = str(rule.get("strategy_id") or "")
+        if (rule.get("type") == "strategy" and sid not in auto_requirements
+                and "_paper_auto_notify_events_base" in rule):
+            rule["notify_events"] = rule.pop("_paper_auto_notify_events_base")
+            mr_store.save_one(data_dir, rule)
+    if monitor_engine is not None:
+        monitor_engine.set_rules(mr_store.load_all(data_dir))
 
 
 def _in_cooldown(data_dir: Path, rule: dict, symbol: str, cooldown_days: int, account_id: str) -> bool:
@@ -173,33 +275,40 @@ def on_rule_events(data_dir: Path, events: list[dict], account_id: str = paper.D
     if not rules:
         return created
     with paper.PAPER_LOCK:
-        for ev in events:
-            symbol = (ev.get("symbol") or "").strip()
-            price = ev.get("price")
-            if not symbol or price is None or price <= 0:
-                continue
-            for rule in rules:
-                if not _matches(rule, ev):
+        for raw_event in events:
+            for ev in _expand_event(raw_event):
+                symbol = (ev.get("symbol") or "").strip()
+                price = ev.get("raw_price") or ev.get("price")
+                if not symbol or isinstance(price, bool) or not isinstance(price, (int, float)) or price <= 0:
                     continue
-                if _in_cooldown(data_dir, rule, symbol, int(rule.get("cooldown_days", 0)), account_id):
-                    continue
-                qty = _sizing_qty(data_dir, rule, float(price), account_id)
-                if qty <= 0:
-                    logger.info("paper auto %s: %s 金额不足以一手 (价 %s)", rule["name"], symbol, price)
-                    continue
-                order, err = paper.create_order(
-                    data_dir, symbol, rule["side"],
-                    account_id=account_id,
-                    qty=qty,
-                    order_type=rule["order_type"],
-                    ref_price=float(price),
-                    source=f"auto:{rule['id']}",
-                )
-                if err:
-                    logger.info("paper auto %s: %s 下单被拒: %s", rule["name"], symbol, err)
-                    continue
-                created.append(order)
-                logger.info("paper auto %s: %s 触发 %s %d 股 (%s)", rule["name"], symbol, rule["side"], qty, order["id"])
+                for rule in rules:
+                    if not _matches(rule, ev):
+                        continue
+                    side = (rule.get("event_sides") or {}).get(ev.get("type"), rule["side"])
+                    if rule["match_kind"] == "strategy" and ev.get("type") in STRATEGY_EVENT_TYPES:
+                        # Pool membership is not an execution signal. Require an explicit side mapping.
+                        if ev.get("type") not in (rule.get("event_sides") or {}):
+                            continue
+                    if _in_cooldown(data_dir, rule, symbol, int(rule.get("cooldown_days", 0)), account_id):
+                        continue
+                    qty = _sizing_qty(data_dir, rule, float(price), account_id)
+                    if qty <= 0:
+                        logger.info("paper auto %s: %s 金额不足以一手 (价 %s)", rule["name"], symbol, price)
+                        continue
+                    order, err = paper.create_order(
+                        data_dir, symbol,
+                        side,
+                        account_id=account_id,
+                        qty=qty,
+                        order_type=rule["order_type"],
+                        ref_price=float(price),
+                        source=f"auto:{rule['id']}",
+                    )
+                    if err:
+                        logger.info("paper auto %s: %s 下单被拒: %s", rule["name"], symbol, err)
+                        continue
+                    created.append(order)
+                    logger.info("paper auto %s: %s 触发 %s %d 股 (%s)", rule["name"], symbol, side, qty, order["id"])
     return created
 
 

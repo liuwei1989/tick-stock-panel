@@ -1185,6 +1185,8 @@ export interface PaperAutoRule {
   match_kind: 'strategy' | 'rule'
   match_id: string
   side: 'buy' | 'sell'
+  event_types?: ('buy_signal' | 'sell_signal' | 'pool_entry' | 'pool_exit')[]
+  event_sides?: Partial<Record<'buy_signal' | 'sell_signal' | 'pool_entry' | 'pool_exit', 'buy' | 'sell'>>
   size_mode: 'fixed_amount' | 'pct_equity'
   size_value: number
   order_type: 'market' | 'next_open' | 'close'

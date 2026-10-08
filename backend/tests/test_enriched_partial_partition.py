@@ -198,6 +198,11 @@ def test_pruned_interior_date_is_rebuilt_without_new_daily_or_factors(tmp_path, 
     monkeypatch.setattr(daily_pipeline, "_invalidate", lambda *_: None)
     monkeypatch.setattr(daily_pipeline, "_refresh_single_view", lambda *_: None)
     monkeypatch.setattr(daily_pipeline, "_refresh_views", lambda *_: None)
+    # 该用例只验证本地 enriched 分区重建, 不触发盘后可选的外部 zzshare 同步。
+    monkeypatch.setattr(daily_pipeline, "_sync_zzshare_extra", lambda *_: {})
+    async def _no_uplimit_reason(*_args, **_kwargs):
+        return 0
+    monkeypatch.setattr("app.services.ext_uplimit_reason.sync_uplimit_reason", _no_uplimit_reason)
     monkeypatch.setattr(data_integrity, "scan_recent_integrity", lambda *_, **__: [])
     calls = []
 

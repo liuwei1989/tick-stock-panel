@@ -112,15 +112,26 @@ def _tier_base(tier: str) -> str:
 def _declared_sources() -> list[dict]:
     """插件 + 自定义源 → 统一能力声明视图。未注册 (hidden/加载失败) 的源不会出现。"""
     rows: list[dict] = []
-    # 内置扩展源 (registry 注册的一等公民, 与 tickflow 并列)
-    rows.append({
-        "name": "zzshare",
-        "display": "Zzshare",
-        "datasets": {"daily", "adj_factor", "instruments", "minute"},
-        "available": True,
-        "status": "ok",
-        "kind": "builtin",
-    })
+    # 内置扩展源 (registry 注册的一等公民, 与 tickflow 并列)。
+    # 数据集声明直接读 provider 类的 capabilities — 单一真理,
+    # 与运行时路由 (kline_sync) / 能力增广 (policy) 同一依据。
+    from app.data_providers import registry as provider_registry
+
+    for name, cls in provider_registry.builtin_sources().items():
+        caps = getattr(cls, "capabilities", None)
+        datasets = {
+            field for field in
+            ("instruments", "daily", "adj_factor", "minute", "realtime", "depth5", "financial")
+            if caps is not None and getattr(caps, field, False)
+        }
+        rows.append({
+            "name": name,
+            "display": getattr(cls, "display", None) or name,
+            "datasets": datasets,
+            "available": True,
+            "status": "ok",
+            "kind": "builtin",
+        })
     for plugin in custom_sources.list_plugins():
         rows.append({
             "name": plugin["name"],

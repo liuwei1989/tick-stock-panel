@@ -1,3 +1,4 @@
+import type { ResearchArtifact } from './researchTypes'
 import { useSyncExternalStore } from 'react'
 import { api, friendlyStreamError, type PriceLevel, type LevelType } from './api'
 
@@ -13,12 +14,25 @@ import { api, friendlyStreamError, type PriceLevel, type LevelType } from './api
  */
 
 export type Phase = 'loading' | 'streaming' | 'done' | 'error'
+export type AgentStage = {
+  stage: string
+  label: string
+  status: 'started' | 'completed' | 'degraded'
+  durationMs?: number
+  failureCode?: string
+  message?: string
+}
 
 export interface ActiveTask {
+  artifact?: ResearchArtifact
+  skillIds?: string[]
+  runId?: string
   id: string
   symbol: string
   name: string
   focus: string
+  mode: 'quick' | 'standard' | 'full'
+  agentStages: AgentStage[]
   phase: Phase
   content: string
   error: string
@@ -34,6 +48,9 @@ export interface ActiveTask {
 }
 
 export interface HistoryReport {
+  artifact?: ResearchArtifact
+  mode?: 'quick' | 'standard' | 'full'
+  skill_ids?: string[]
   id: string
   symbol: string
   name: string
@@ -157,7 +174,13 @@ export async function findTodayReport(symbol: string): Promise<HistoryReport | n
   return history.find(r => r.symbol === symbol && (r.created_at ?? '').slice(0, 10) === today) ?? null
 }
 
-export async function startAnalysis(symbol: string, name: string, focus = ''): Promise<{ id?: string; error?: string }> {
+export async function startAnalysis(
+  symbol: string,
+  name: string,
+  focus = '',
+  mode: 'quick' | 'standard' | 'full' = 'standard',
+  skillIds: string[] = [],
+): Promise<{ id?: string; error?: string }> {
   const existing = activeTasks.find(t => t.symbol === symbol && (t.phase === 'loading' || t.phase === 'streaming'))
   if (existing) {
     activeDialogTaskId = existing.id
@@ -173,7 +196,7 @@ export async function startAnalysis(symbol: string, name: string, focus = ''): P
 
   const id = `stask_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`
   const task: ActiveTask = {
-    id, symbol, name, focus,
+    id, symbol, name, focus, mode, skillIds, agentStages: [],
     phase: 'loading', content: '', error: '',
     meta: null, createdAt: Date.now(),
   }
@@ -183,17 +206,31 @@ export async function startAnalysis(symbol: string, name: string, focus = ''): P
   rebuildSnap()
   emit()
 
-  runStream(id, symbol, name, focus)
+  runStream(id, symbol, name, focus, mode, skillIds)
   return { id }
 }
 
-async function runStream(id: string, symbol: string, _name: string, focus: string) {
+async function runStream(
+  id: string,
+  symbol: string,
+  _name: string,
+  focus: string,
+  mode: 'quick' | 'standard' | 'full',
+  skillIds: string[],
+) {
   try {
     let firstDelta = true
-    for await (const chunk of api.stockAnalyzeStream(symbol, focus)) {
+    let receivedDone = false
+    for await (const chunk of api.stockAnalyzeStream(symbol, focus, mode, skillIds)) {
       const cur = activeTasks.find(t => t.id === id)
       if (!cur) return
       switch (chunk.type) {
+        case 'run':
+          patchTask(id, { runId: chunk.run_id })
+          break
+        case 'artifact':
+          patchTask(id, { artifact: chunk.artifact })
+          break
         case 'meta':
           patchTask(id, { meta: { summary: chunk.summary, levels: chunk.levels, close: chunk.close } })
           break
@@ -201,21 +238,48 @@ async function runStream(id: string, symbol: string, _name: string, focus: strin
           if (firstDelta) { patchTask(id, { phase: 'streaming' }); firstDelta = false }
           patchTask(id, { content: cur.content + (chunk.content ?? '') })
           break
+        case 'agent_stage':
+          if (chunk.stage && chunk.label && chunk.status) {
+            const stages = cur.agentStages.filter((stage) => stage.stage !== chunk.stage)
+            patchTask(id, { agentStages: [...stages, {
+              stage: chunk.stage,
+              label: chunk.label,
+              status: chunk.status,
+              durationMs: chunk.duration_ms,
+              failureCode: chunk.failure_code,
+              message: chunk.message,
+            }] })
+          }
+          break
         case 'error':
           patchTask(id, { phase: 'error', error: chunk.message ?? '分析失败' })
           return
         case 'done':
-          patchTask(id, { phase: 'done' })
+          receivedDone = true
+          patchTask(id, { phase: 'done', savedReportId: chunk.report?.id,
+            error: chunk.archive_error ? '报告归档失败，当前内容尚未保存' : '' })
+          if (chunk.report) {
+            history = [chunk.report, ...history.filter(r => r.id !== chunk.report?.id)]
+            historyLoaded = true
+            rebuildSnap()
+            emit()
+          }
           break
       }
     }
     const final = activeTasks.find(t => t.id === id)
     if (final && final.phase !== 'error') {
+      if (!receivedDone) {
+        patchTask(id, { phase: 'error', error: '分析连接中断，尚未确认归档完成。请刷新历史记录后重试。' })
+        await loadHistory()
+        return
+      }
       // 兜底:流正常结束但从未收到 delta(后端在生成内容前异常断流)→ 标记失败,避免卡死
       if (!final.content) {
         patchTask(id, { phase: 'error', error: '分析未返回内容(后端可能异常中断),请重试' })
         return
       }
+      if (final.runId) { await loadHistory(); return }
       try {
         const res = await api.stockAnalysisReportSave({
           symbol: final.symbol, name: final.name, focus: final.focus,
@@ -256,8 +320,15 @@ export function restoreDialog(taskId: string) {
   }
   activeDialogTaskId = taskId; dialogMinimized = false; rebuildSnap(); emit()
 }
-export async function retryAnalysis(task: { symbol: string; name: string; focus: string }): Promise<{ error?: string }> {
-  return startAnalysis(task.symbol, task.name, task.focus)
+export async function retryAnalysis(task: {
+  symbol: string
+  name: string
+  focus: string
+  mode?: 'quick' | 'standard' | 'full'
+  skillIds?: string[]
+  skill_ids?: string[]
+}): Promise<{ error?: string }> {
+  return startAnalysis(task.symbol, task.name, task.focus, task.mode ?? 'standard', task.skillIds ?? task.skill_ids ?? [])
 }
 export async function deleteReport(reportId: string): Promise<void> {
   try {

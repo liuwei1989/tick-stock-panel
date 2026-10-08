@@ -14,12 +14,14 @@ from __future__ import annotations
 import logging
 import math
 from datetime import timedelta
+from typing import Literal
 
 import polars as pl
 from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
+from app.indicators.cyq import compute_chip_metrics
 from app.indicators.levels import compute_levels, summarize_levels
 from app.market_time import cn_today
 from app.services import stock_reports
@@ -147,10 +149,28 @@ def get_levels(
     }
 
 
+@router.get("/cyq")
+def get_chip_distribution(
+    request: Request,
+    symbol: str = Query(..., description="标的代码,如 000001.SZ"),
+    days: int = Query(210, ge=20, le=1000, description="筹码分布使用的交易日数"),
+):
+    """Compute on-demand turnover-decayed cost distribution metrics."""
+    if not symbol:
+        raise HTTPException(400, "symbol 不能为空")
+    repo = request.app.state.repo
+    end = cn_today()
+    start = end - timedelta(days=days * 2)
+    frame = repo.get_daily_asset(repo.resolve_asset_type(symbol), symbol, start, end)
+    return {"symbol": symbol, **compute_chip_metrics(frame, days=days)}
+
+
 class AnalyzeRequest(BaseModel):
     """AI 个股分析请求。"""
     symbol: str
     focus: str = ""  # 可选:用户追加的分析关注点
+    mode: Literal["quick", "standard", "full"] = "standard"
+    skill_ids: list[str] = Field(default_factory=list, max_length=3)
 
 
 @router.post("/analyze")
@@ -166,8 +186,16 @@ async def analyze_stock(request: Request, req: AnalyzeRequest):
     repo = request.app.state.repo
     data_dir = repo.store.data_dir
 
+    from app.services.research_skills import load_skills, select_skills
+    try:
+        select_skills(load_skills(data_dir)[0], req.skill_ids, req.focus)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
     async def stream_gen():
-        async for chunk in with_heartbeat(analyze_stock_stream(repo, data_dir, req.symbol, req.focus)):
+        async for chunk in with_heartbeat(
+            analyze_stock_stream(repo, data_dir, req.symbol, req.focus, mode=req.mode, skill_ids=req.skill_ids),
+        ):
             yield chunk + "\n"
 
     return StreamingResponse(

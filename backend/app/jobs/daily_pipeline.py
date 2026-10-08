@@ -1307,7 +1307,12 @@ def _maybe_push_review(content: str, meta: dict) -> None:
                     email_body,
                 )
                 logger.info("review push(email) %s", "sent" if ok else "failed")
-            # 未来更多渠道在此追加分支
+            else:
+                from app.services.notification_channels import CHANNELS, dispatch
+                from app.services.quote_service import _WEBHOOK_EXECUTOR
+                if ch in CHANNELS:
+                    dispatch(_WEBHOOK_EXECUTOR, ch, "每日复盘", content,
+                             event_key=f"market_review:{cn_today().isoformat()}")
     except Exception as e:  # noqa: BLE001
         logger.warning("review push error: %s", e)
 
@@ -1477,6 +1482,18 @@ def start_scheduler(repo: KlineRepository, capset: CapabilitySet) -> AsyncIOSche
         logger.info("scheduled_review enabled @%02d:%02d mon-fri",
                     review_sched["hour"], review_sched["minute"])
 
+    from app.services.research_schedule import tick as research_tick
+    scheduler.add_job(
+        research_tick, args=[repo], trigger=IntervalTrigger(minutes=1),
+        id="research_schedule", max_instances=1, coalesce=True, replace_existing=True,
+    )
+    # 每日行动摘要: 收盘后自动生成并按已选择的通知渠道推送。
+    # 不依赖定时研究配置; 没有外部渠道时驾驶舱仍会保留摘要。
+    from app.services.daily_brief import scheduled_tick as daily_brief_tick
+    scheduler.add_job(
+        daily_brief_tick, args=[repo], trigger=IntervalTrigger(minutes=1),
+        id="daily_brief", max_instances=1, coalesce=True, replace_existing=True,
+    )
     scheduler.start()
     logger.info("scheduler started; instruments@%02d:%02d, pipeline@%02d:%02d, depth@%02d:%02d mon-fri",
                 inst_sched["hour"], inst_sched["minute"], sched["hour"], sched["minute"],

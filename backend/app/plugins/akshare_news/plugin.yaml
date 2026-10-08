@@ -1,0 +1,9 @@
+# AKShare 东方财富全球财经快讯。插件仅补充 AI 大盘复盘新闻上下文，不参与行情能力路由。
+name: akshare_news
+display_name: "AKShare 财经快讯"
+runtime: python
+entry: app.plugins.akshare_news.provider:AkshareNewsProvider
+check: app.plugins.akshare_news.provider:availability
+datasets: [news]
+description: "通过 AKShare 获取东方财富全球财经快讯，作为 AI 大盘复盘的新闻上下文。第三方网页抓取，接口稳定性和使用条款需自行评估。"
+install_hint: "点击安装以在当前 Python 环境安装 AKShare。"

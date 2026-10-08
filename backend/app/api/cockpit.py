@@ -17,7 +17,17 @@ def _data_dir(request: Request):
 
 @router.get("/overview")
 def overview(request: Request):
-    return cockpit_overview(_data_dir(request))
+    result = cockpit_overview(_data_dir(request))
+    from app.services.daily_brief import load
+    result["daily_brief"] = load(_data_dir(request))
+    return result
+
+
+@router.post("/daily-brief")
+async def daily_brief(request: Request):
+    from app.services.daily_brief import generate
+
+    return await generate(request.app.state.repo, _data_dir(request), force=True)
 
 
 @router.get("/ai-report/{post_id}")
@@ -26,5 +36,5 @@ def ai_report_detail(request: Request, post_id: int):
     from app.services.zzshare_extra import fetch_ai_report_detail
     try:
         return fetch_ai_report_detail(post_id, _data_dir(request))
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(502, f"获取 AI 报告正文失败: {e}")
+    except Exception as e:
+        raise HTTPException(502, f"获取 AI 报告正文失败: {e}") from e

@@ -1,6 +1,5 @@
-import assert from 'node:assert/strict'
-import { test } from 'node:test'
 import { QueryClient, QueryObserver } from '@tanstack/react-query'
+import { expect, test } from 'vitest'
 import { scheduleNeighborPrefetch } from './neighborPrefetch.ts'
 
 const tick = () => new Promise(resolve => setTimeout(resolve, 10))
@@ -26,13 +25,13 @@ test('foreground requests finish before serial neighbor requests start', async (
   ])
   try {
     await tick()
-    assert.deepEqual(calls, [])
+    expect(calls).toEqual([])
     foreground.resolve()
     await tick()
-    assert.deepEqual(calls, ['first'])
+    expect(calls).toEqual(['first'])
     neighbor.resolve()
     await tick()
-    assert.deepEqual(calls, ['first', 'second'])
+    expect(calls).toEqual(['first', 'second'])
   } finally { stop(); unsubscribe(); client.clear() }
 })
 
@@ -55,10 +54,10 @@ test('new foreground work pauses the queue; errors allow it to resume', async ()
   try {
     neighbor.resolve()
     await tick()
-    assert.deepEqual(calls, ['first'])
+    expect(calls).toEqual(['first'])
     foreground.resolve()
     await tick(); await tick()
-    assert.deepEqual(calls, ['first', 'second', 'third'])
+    expect(calls).toEqual(['first', 'second', 'third'])
   } finally { stop(); unsubscribe(); client.clear() }
 })
 
@@ -74,13 +73,13 @@ test('switching or closing stops pending and chained work', async () => {
   stop()
   neighbor.resolve()
   await tick()
-  assert.deepEqual(calls, ['first'])
+  expect(calls).toEqual(['first'])
   const stopBeforeStart = scheduleNeighborPrefetch(client, 'next', [
     async () => { calls.push('obsolete') },
   ])
   stopBeforeStart()
   await tick()
-  assert.deepEqual(calls, ['first'])
+  expect(calls).toEqual(['first'])
   client.clear()
 })
 
@@ -100,7 +99,7 @@ test('prefetch reuses a fresh cache entry without another network request', asyn
   ])
   try {
     await tick(); await tick()
-    assert.equal(completed, true)
-    assert.equal(requests, 0)
+    expect(completed).toBe(true)
+    expect(requests).toBe(0)
   } finally { stop(); client.clear() }
 })

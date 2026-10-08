@@ -1,3 +1,4 @@
+import type { ResearchArtifact, ResearchSignal, ResearchOutcome, ResearchRun, ResearchSkill, ResearchSkillDetail, ResearchBatch, NotificationChannel, ResearchSchedule, PortfolioRiskAccount } from "./researchTypes"
 // 后端 API 客户端 — 全项目统一入口
 //
 // Dev: Vite 按启动脚本解析出的 BACKEND_HOST/BACKEND_PORT 代理 /api
@@ -232,7 +233,24 @@ export interface StockLevels {
   series?: LevelSeries
 }
 
+export interface ChipDistribution {
+  symbol: string
+  available: boolean
+  reason: string | null
+  as_of: string | null
+  trading_days: number
+  average_cost: number | null
+  cost_70: { lower: number; upper: number; concentration: number | null } | null
+  cost_90: { lower: number; upper: number; concentration: number | null } | null
+  concentration_70: number | null
+  concentration_90: number | null
+  profitable_ratio: number | null
+}
+
 export interface AiStockReport {
+  artifact?: ResearchArtifact
+  mode?: 'quick' | 'standard' | 'full'
+  skill_ids?: string[]
   id: string
   symbol: string
   name: string
@@ -1785,6 +1803,22 @@ export interface StrategyBacktestResult {
     n_win: number
     n_lose: number
   } | null
+  /** 可复现研究输入: 策略代码、数据 generation、参数和成交规则快照 */
+  research_manifest?: {
+    manifest_version: number
+    engine_version: string
+    strategy_id: string
+    strategy_code_sha256: string
+    strategy_source: string
+    asset_type: string
+    start: string
+    end: string
+    params: Record<string, any>
+    overrides: Record<string, any>
+    execution: Record<string, any>
+    data_generation: string | null
+    metrics_methodology: string
+  }
   per_symbol_stats: {
     symbol: string
     n_trades: number
@@ -2429,6 +2463,7 @@ export interface CockpitOverview {
     layers: CockpitHealthLayer[]
     enriched_behind_daily: boolean
   }
+  zzshare: CockpitZzshare
   mainline: {
     available: boolean
     detail?: string
@@ -2450,6 +2485,41 @@ export interface CockpitOverview {
   workflow: WorkflowOverview
   session: CockpitSession
   alerts: CockpitAlert[]
+  decision_dashboard: CockpitDecisionDashboard
+  daily_brief: DailyBrief | null
+}
+
+export interface DailyBriefItem {
+  symbol: string
+  action: string
+  reason: string
+  condition: string
+  risk: string
+}
+export interface DailyBrief {
+  schema_version: number
+  as_of: string
+  generated_at: string
+  source: 'agent' | 'rules'
+  sentiment: string
+  sentiment_score: number | null
+  sentiment_reason: string
+  buy: DailyBriefItem[]
+  sell: DailyBriefItem[]
+  disclaimer: string
+}
+
+export interface CockpitDecisionDashboard {
+  available: boolean
+  score: number | null
+  state?: string | null
+  phase?: string | null
+  as_of?: string | null
+  mainlines: { member: string; level: string; score: number | null; streak_days: number; leader_symbol: string | null }[]
+  risk_alerts: { level: 'error' | 'warn'; title: string; detail: string }[]
+  next_action: CockpitAlert | null
+  workflow_status: string
+  latest_agent_report: { symbol?: string; name?: string; summary?: string; created_at?: string } | null
 }
 
 // ===== 驾驶舱提醒 (带可执行处理动作) =====
@@ -2460,6 +2530,58 @@ export interface CockpitAlert {
   action?: string
   action_label?: string
   action_payload?: Record<string, unknown>
+}
+
+// ===== 驾驶舱市场脉搏 (zzshare 实时模块摘要) =====
+export interface CockpitZzTopicItem {
+  plate_name: string | null
+  score: number | null
+  rate: number | null
+  is_new: boolean | null
+  days: number | null
+  sum_rate: number | null
+  leader: string | null
+}
+export interface CockpitZzUplimitSample {
+  name?: string
+  board?: number
+  board_desc?: string
+  first_time?: string
+}
+export interface CockpitZzHotItem {
+  name: string | null
+  code: string
+  rank: number | null
+  rank_diff: number | null
+  last_pct: number | null
+}
+export interface CockpitZzMovementItem {
+  name: string | null
+  code: string
+  change_rate: number | null
+  rank: number | null
+}
+export interface CockpitZzAiTitle {
+  title: string | null
+  concepts: string[] | null
+  time: string | null
+}
+export interface CockpitZzshare {
+  topics: { available: boolean; date?: string | null; top?: CockpitZzTopicItem[] }
+  uplimit: {
+    available: boolean
+    date?: string | null
+    count?: number
+    broken_count?: number
+    max_consecutive?: number
+    ladder?: Record<string, number>
+    sample?: CockpitZzUplimitSample[]
+  }
+  lhb: { available: boolean; date?: string | null; count?: number; top_net_buy?: { name: string | null; net: number }[] }
+  sentiment: { available: boolean; date?: string | null; p_close?: number | null; p_open?: number | null }
+  hot: { available: boolean; date?: string | null; top?: CockpitZzHotItem[] }
+  ai_reports: { available: boolean; count?: number; titles?: CockpitZzAiTitle[] }
+  movement: { available: boolean; date?: string | null; count?: number; top?: CockpitZzMovementItem[] }
 }
 
 // ===== 驾驶舱交易节点时间线 =====
@@ -2621,6 +2743,7 @@ export const api = {
   capabilityMatrix: () => request<CapabilityMatrix>('/api/settings/capability-matrix'),
   workflowOverview: () => request<WorkflowOverview>('/api/workflow/overview'),
   cockpitOverview: () => request<CockpitOverview>('/api/cockpit/overview'),
+  dailyBriefGenerate: () => request<DailyBrief>('/api/cockpit/daily-brief', { method: 'POST' }),
   premarketLatest: () => request<PremarketReport>('/api/premarket-report'),
   premarketList: (limit = 30) =>
     request<{ reports: PremarketReport[] }>(`/api/premarket-report/list?limit=${limit}`),
@@ -3988,9 +4111,34 @@ export const api = {
     }
   },
 
+  notificationChannels: () => request<{ channels: NotificationChannel[] }>('/api/notification-channels'),
+  notificationChannelSave: (id: string, values: Record<string, string>) => request<{ channels: NotificationChannel[] }>(`/api/notification-channels/${encodeURIComponent(id)}`, { method: 'PUT', body: JSON.stringify({ values }) }),
+  notificationDeliveries: () => request<{ deliveries: { id: string; channel: string; status: string; attempts: number; reason?: string; created_at: string }[] }>('/api/notification-channels/deliveries/history'),
+  researchBatches: () => request<{ batches: ResearchBatch[] }>('/api/research/batches'),
+  researchPortfolioRisk: () => request<{ accounts: PortfolioRiskAccount[] }>('/api/research/portfolio-risk'),
+  researchSchedule: () => request<{ config: ResearchSchedule; last_check: { at: string; status: string } | null; scheduler_available: boolean }>('/api/research/schedule'),
+  researchScheduleSave: (config: ResearchSchedule) => request<ResearchSchedule>('/api/research/schedule', { method: 'PUT', body: JSON.stringify(config) }),
+  researchBatchStart: (symbols: string[], requestId: string, skillIds: string[] = ['auto']) => request<{ batch: ResearchBatch; reused: boolean }>('/api/research/batches', { method: 'POST', body: JSON.stringify({ symbols, request_id: requestId, skill_ids: skillIds }) }),
+  researchSkills: () => request<{ skills: ResearchSkill[]; errors: string[]; builtin_count: number; custom_count: number }>('/api/research/skills'),
+  researchSkillDetail: (id: string) => request<ResearchSkillDetail>(`/api/research/skills/${encodeURIComponent(id)}`),
+  researchRuns: () => request<{ runs: ResearchRun[] }>('/api/research/runs'),
+  researchSignals: () => request<{ signals: ResearchSignal[] }>('/api/research/signals'),
+  researchTransition: (id: string, status: 'watching' | 'review_required' | 'dismissed', version: number, reason: string) =>
+    request<ResearchSignal>(`/api/research/signals/${encodeURIComponent(id)}/status`, {
+      method: 'POST', body: JSON.stringify({ status, expected_version: version, reason }),
+    }),
+  researchOutcome: (id: string, version: number, horizon = 5) =>
+    request<{ signal: ResearchSignal; outcome: ResearchOutcome }>(`/api/research/signals/${encodeURIComponent(id)}/outcome`, {
+      method: 'POST', body: JSON.stringify({ expected_version: version, horizon }),
+    }),
+
   // ===== 个股分析 =====
   stockAnalysisLevels: (symbol: string, days = 120) =>
     request<StockLevels>(`/api/stock-analysis/levels?symbol=${encodeURIComponent(symbol)}&days=${days}`),
+
+  stockAnalysisCyq: (symbol: string, days = 210) =>
+    request<ChipDistribution>(`/api/stock-analysis/cyq?symbol=${encodeURIComponent(symbol)}&days=${days}`),
+
 
   stockAnalysisReportsList: () =>
     request<{ reports: AiStockReport[] }>('/api/stock-analysis/reports'),
@@ -4011,8 +4159,17 @@ export const api = {
    * AI 个股四维分析 — 流式调用(NDJSON,与财务分析同协议)。
    * meta 里额外带 levels(关键价位)供图表回放。
    */
-  async *stockAnalyzeStream(symbol: string, focus?: string): AsyncGenerator<{
-    type: 'meta' | 'delta' | 'error' | 'done' | 'ping'
+  async *stockAnalyzeStream(symbol: string, focus?: string, mode: 'quick' | 'standard' | 'full' = 'standard', skillIds: string[] = []): AsyncGenerator<{
+    type: 'meta' | 'agent_stage' | 'delta' | 'error' | 'done' | 'ping' | 'run' | 'context' | 'artifact'
+    run_id?: string
+    artifact?: ResearchArtifact
+    report?: AiStockReport
+    archive_error?: boolean
+    stage?: string
+    label?: string
+    status?: 'started' | 'completed' | 'degraded'
+    duration_ms?: number
+    failure_code?: string
     symbol?: string
     summary?: string
     levels?: Record<LevelType, PriceLevel[]>
@@ -4023,7 +4180,7 @@ export const api = {
     const res = await fetch('/api/stock-analysis/analyze', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ symbol, focus: focus ?? '' }),
+      body: JSON.stringify({ symbol, focus: focus ?? '', mode, skill_ids: skillIds }),
     })
     if (!res.ok) {
       let detail = ''

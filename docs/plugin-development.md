@@ -28,7 +28,7 @@ display_name: "我的数据源"                 # 设置页显示名
 runtime: none                            # 运行时类型: node | python | none
 entry: app.plugins.my_source.provider:MyProvider   # provider 类的导入路径
 check: app.plugins.my_source.bridge:availability   # 可用性检测函数(可选)
-datasets: [realtime]                     # 支持: daily/adj_factor/minute/realtime/depth5/financial
+datasets: [realtime]                     # 行情: daily/adj_factor/minute/realtime/depth5/financial; news 为复盘新闻上下文
 api_key_env: MY_SOURCE_API_KEY           # (可选)声明后设置页提供 Key 输入框
 hidden: false                            # (可选)true = 已加载但对设置页隐藏,不注册不展示
 description: "数据源描述"
@@ -38,6 +38,11 @@ homepage: "https://example.com"          # (可选)官网/申请地址, 显示�
 
 只声明真实提供的数据集;未声明的数据集 `provider_has_dataset` 返回 False,自动回退
 TickFlow。不要声明做不了的数据集(粒度含义见下文"能力声明的粒度")。
+
+`news` 是一个仅供 AI 大盘复盘使用的上下文数据集，不参与日 K、分钟、实时行情或
+能力路由。新闻插件应提供 `get_market_news(limit=8) -> list[dict]`，每条记录至少包含
+`title`，可选 `snippet`、`source`、`published_date` 和 `url`；抓取失败或依赖未安装时
+插件必须保持可选，复盘自动降级为无新闻上下文。
 
 #### api_key_env(界面配置 API Key)
 

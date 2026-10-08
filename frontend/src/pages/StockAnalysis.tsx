@@ -8,6 +8,7 @@ import { StockPreviewDialog } from '@/components/StockPreviewDialog'
 import { LastStockChip } from '@/components/LastStockChip'
 import { AnalysisKChart, type PriceLevel, type LevelType } from '@/components/stock-analysis/AnalysisKChart'
 import { PriceAlertDialog } from '@/components/stock-analysis/PriceAlertDialog'
+import { ResearchSkillPicker } from '@/components/research/ResearchSkillPicker'
 import { api } from '@/lib/api'
 import { useLastStock } from '@/lib/useLastStock'
 import { QK } from '@/lib/queryKeys'
@@ -32,6 +33,8 @@ export function StockAnalysis() {
   const [confirmReport, setConfirmReport] = useState<{ id: string; created_at: string; focus: string } | null>(null)
   const [previewSymbol, setPreviewSymbol] = useState<string | null>(null)
   const [showPriceAlerts, setShowPriceAlerts] = useState(false)
+  const [analysisMode, setAnalysisMode] = useState<'quick' | 'standard' | 'full'>('standard')
+  const [skillIds, setSkillIds] = useState<string[]>([])
   const { last: lastStock, remember: rememberStock } = useLastStock('stock-analysis')
 
   // 进入页面立即加载历史报告(供右侧常驻列表)。store 内部有 historyLoaded 去重, 重复调用安全。
@@ -73,7 +76,7 @@ export function StockAnalysis() {
   }
 
   const doAnalysis = async () => {
-    const r = await startAnalysis(symbol, name)
+    const r = await startAnalysis(symbol, name, '', analysisMode, skillIds)
     if (r.error) toast(r.error, 'error')
   }
 
@@ -91,7 +94,7 @@ export function StockAnalysis() {
 
       <div className="w-full px-8 py-6 space-y-6">
         {/* 搜索栏 */}
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-3">
           <div className="w-72">
             <StockFinancialSearch onSelect={onSelect} assetTypes="stock,index" />
           </div>
@@ -106,13 +109,24 @@ export function StockAnalysis() {
                 <span className="text-[10px] font-mono text-muted">{symbol}</span>
                 <ExternalLink className="h-3 w-3 text-muted opacity-0 group-hover:opacity-100 transition-opacity" />
               </button>
+              <select
+                aria-label="Agent 分析深度"
+                value={analysisMode}
+                onChange={(event) => setAnalysisMode(event.target.value as 'quick' | 'standard' | 'full')}
+                className="h-8 rounded-btn border border-border/60 bg-surface px-2 text-[11px] text-secondary"
+                title="选择多阶段 Agent 分析深度"
+              >
+                <option value="quick">快速分析</option>
+                <option value="standard">标准多 Agent</option>
+                <option value="full">完整多 Agent</option>
+              </select>
               <button
                 onClick={handleAnalyze}
                 disabled={checking}
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-btn bg-gradient-to-r from-sky-500/25 to-blue-500/15 border border-sky-400/30 text-sky-300 text-xs font-medium hover:from-sky-500/35 hover:to-blue-500/25 transition-all disabled:opacity-40 disabled:cursor-not-allowed"
               >
                 {checking ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-                AI 个股分析
+                {analysisMode === 'quick' ? '快速分析' : 'Agent 分析'}
               </button>
               <button
                 onClick={() => setShowPriceAlerts(true)}
@@ -125,6 +139,8 @@ export function StockAnalysis() {
             </>
           )}
         </div>
+
+        <ResearchSkillPicker value={skillIds} onChange={setSkillIds} disabled={checking} />
 
         {/* 主体:左侧当前个股看板 + 右侧常驻历史报告 */}
         <div className="grid grid-cols-[1fr_288px] gap-6 items-start">
@@ -189,6 +205,13 @@ function StockAnalysisBoard({ symbol }: { symbol: string }) {
     staleTime: 60_000,
   })
 
+  const cyqQ = useQuery({
+    queryKey: QK.stockCyq(symbol, 210),
+    queryFn: () => api.stockAnalysisCyq(symbol, 210),
+    enabled: !!symbol,
+    staleTime: 60_000,
+  })
+
   if (kline.isLoading) {
     return <div className="flex items-center justify-center py-20"><Loader2 className="h-5 w-5 animate-spin text-muted" /></div>
   }
@@ -244,6 +267,50 @@ function StockAnalysisBoard({ symbol }: { symbol: string }) {
           height={480}
         />
       </div>
+      <div className="border-t border-border/40 px-4 py-3">
+        <div className="mb-2 text-xs font-medium text-foreground">筹码分布 · 换手率衰减估算</div>
+        {cyqQ.isLoading ? (
+          <div className="text-xs text-muted">正在计算筹码成本区间…</div>
+        ) : cyqQ.data?.available ? (
+          <div className="grid grid-cols-2 gap-x-6 gap-y-2 text-xs sm:grid-cols-4">
+            <ChipMetric label="平均成本" value={cyqQ.data.average_cost?.toFixed(2) ?? '—'} />
+            <ChipMetric label="获利筹码" value={formatRatio(cyqQ.data.profitable_ratio)} />
+            <ChipMetric
+              label="70% 成本区间"
+              value={formatBand(cyqQ.data.cost_70)}
+              detail={`集中度 ${formatRatio(cyqQ.data.concentration_70)}`}
+            />
+            <ChipMetric
+              label="90% 成本区间"
+              value={formatBand(cyqQ.data.cost_90)}
+              detail={`集中度 ${formatRatio(cyqQ.data.concentration_90)}`}
+            />
+          </div>
+        ) : (
+          <div className="text-xs text-muted">{cyqQ.data?.reason ?? '筹码数据暂不可用'}</div>
+        )}
+        <div className="mt-2 text-[10px] text-muted/70">
+          依据最近 {cyqQ.data?.trading_days ?? 210} 个交易日的行情与换手率估算，非交易所持仓统计。
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function formatRatio(value: number | null | undefined): string {
+  return value == null ? '—' : `${(value * 100).toFixed(1)}%`
+}
+
+function formatBand(value: { lower: number; upper: number } | null | undefined): string {
+  return value ? `${value.lower.toFixed(2)} – ${value.upper.toFixed(2)}` : '—'
+}
+
+function ChipMetric({ label, value, detail }: { label: string; value: string; detail?: string }) {
+  return (
+    <div className="min-w-0">
+      <div className="text-[10px] text-muted">{label}</div>
+      <div className="mt-0.5 truncate font-mono text-foreground" title={value}>{value}</div>
+      {detail && <div className="mt-0.5 text-[10px] text-muted">{detail}</div>}
     </div>
   )
 }

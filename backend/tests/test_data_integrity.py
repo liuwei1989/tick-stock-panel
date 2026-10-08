@@ -606,6 +606,12 @@ def test_pipeline_self_heals_snapshot_day(tmp_path, monkeypatch):
         return 0
 
     monkeypatch.setattr(kline_sync, "sync_and_persist_daily_batch", _fake_batch)
+    # 盘后管道还会触发可选的 zzshare 扩展同步; 此集成用例只验证本地分区自愈,
+    # 外部服务必须隔离, 避免全量测试依赖网络/令牌并卡在重试等待。
+    monkeypatch.setattr(daily_pipeline, "_sync_zzshare_extra", lambda repo: {})
+    async def _no_uplimit_reason(*_args, **_kwargs):
+        return 0
+    monkeypatch.setattr("app.services.ext_uplimit_reason.sync_uplimit_reason", _no_uplimit_reason)
     # run_pipeline() 不传 data_dir 时读 settings.data_dir — 同步指到 tmp
     monkeypatch.setattr(app_settings, "data_dir", tmp_path)
 

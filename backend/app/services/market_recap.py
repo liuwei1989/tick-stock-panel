@@ -14,14 +14,89 @@
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
+import threading
+import time
 from datetime import date
 from typing import AsyncIterator
 
 from app.services.market_overview_builder import build_market_overview
 
 logger = logging.getLogger(__name__)
+
+_NEWS_CACHE_TTL_S = 60.0
+_news_cache_lock = threading.Lock()
+_news_cache: tuple[float, list[dict]] = (0.0, [])
+
+
+def _fetch_market_news() -> list[dict]:
+    """Combine AKShare headlines with locally synced ZZShare stock catalysts."""
+    global _news_cache
+    now = time.monotonic()
+    with _news_cache_lock:
+        cached_at, cached = _news_cache
+        if now - cached_at < _NEWS_CACHE_TTL_S:
+            return list(cached)
+
+    try:
+        from app.data_providers import custom as custom_sources
+
+        if custom_sources.provider_has_dataset("akshare_news", "news"):
+            provider = custom_sources.get_provider("akshare_news")
+            rows = provider.get_market_news(limit=8)[:5]
+        else:
+            rows = []
+    except Exception as e:  # news must never block the recap
+        logger.warning("AKShare market news unavailable: %s", e)
+        rows = []
+
+    # ZZShare currently exposes stock-level limit-up reasons rather than a
+    # general news feed. Preserve their date and sector tags as catalysts.
+    try:
+        from app.config import settings
+
+        uplimit_dir = settings.data_dir / "uplimit"
+        files = sorted(uplimit_dir.glob("*.json"), reverse=True) if uplimit_dir.exists() else []
+        if files:
+            payload = json.loads(files[0].read_text(encoding="utf-8"))
+            trade_date = str(payload.get("date") or files[0].stem)
+            for stock in (payload.get("stocks") or [])[:5]:
+                reason = str(stock.get("reason") or "").strip()
+                if not reason:
+                    continue
+                plates = stock.get("plates") or []
+                if isinstance(plates, str):
+                    plates = [plates]
+                plate_names = [
+                    str(item.get("plate_name") or item.get("name") or "").strip()
+                    if isinstance(item, dict) else str(item).strip()
+                    for item in plates
+                ]
+                rows.append({
+                    "title": f"{stock.get('name') or stock.get('ts_code') or '个股'} 涨停逻辑",
+                    "snippet": reason[:500],
+                    "source": "ZZShare 个股涨停原因",
+                    "published_date": trade_date,
+                    "url": "",
+                    "sector": "、".join(name for name in plate_names[:4] if name),
+                })
+    except Exception as e:  # ZZShare context is optional and locally cached
+        logger.warning("ZZShare stock catalysts unavailable: %s", e)
+
+    with _news_cache_lock:
+        _news_cache = (time.monotonic(), rows)
+    return list(rows)
+
+
+async def _load_market_news() -> list[dict]:
+    """Run third-party synchronous scraping away from the event loop, with a timeout."""
+    try:
+        return await asyncio.wait_for(asyncio.to_thread(_fetch_market_news), timeout=15.0)
+    except TimeoutError:
+        logger.warning("AKShare market news timed out")
+        return []
 
 
 # 指数简称映射:摘要里用简称(上/深/创/科),全称太长列表放不下。与前端 INDEX_SHORT 对齐。
@@ -72,6 +147,7 @@ _SYSTEM_PROMPT = """你是一位拥有 15 年 A 股一线研究经验的市场�
 结合提供的近期新闻,客观提炼可能影响后续盘面的催化或扰动,明确区分"已兑现"与"待发酵"。**若无新闻数据,则直接从量价异动客观推断可能的催化逻辑并给出结论,不要标注"[推断]"之类的过程标签,更不要编造具体消息。**
 
 ### 7. 📌 后续观察要点
+- 结合新闻催化、板块强度/持续性、涨停梯队与市场情绪,明确给出下一交易日优先观察的板块方向和开盘后的验证条件;证据冲突或不足时说明不确定性
 - 客观列出明日值得关注的盘面信号(如量能能否维持、某均线得失、某板块持续性)
 - 客观描述不同情景下市场结构的可能演变(如"若量能持续放大,普涨格局或延续";"若量能萎缩,结构性行情为主"),**不涉及仓位与买卖方向**
 - **不输出**"仓位建议""进攻/防守基调""买卖方向""追高/低吸/反包"等操作指令
@@ -221,19 +297,23 @@ def _build_user_prompt(overview: dict, news: list[dict], focus: str, lhb_context
 
     if news:
         news_lines = []
-        for i, n in enumerate(news[:8], 1):
+        for i, n in enumerate(news[:10], 1):
             title = (n.get("title") or "").strip()
             snippet = (n.get("snippet") or "").strip()
             source = (n.get("source") or "").strip()
             pub = (n.get("published_date") or "").strip()
             meta = " / ".join(p for p in (source, pub) if p)
+            sector = (n.get("sector") or "").strip()
+            if sector:
+                meta = " / ".join(p for p in (meta, f"关联板块: {sector}") if p)
             news_lines.append(f"{i}. {title} ({meta})\n   {snippet}" if meta else f"{i}. {title}\n   {snippet}")
         parts.extend(["", "## 近期市场新闻", "\n".join(news_lines)])
     else:
         parts.extend([
             "",
             "## 近期市场新闻",
-            "(暂无新闻数据:本功能新闻检索能力将在后续版本接入。"
+            "(暂无新闻数据:本次复盘未获取到可用新闻。"
+            "请结合盘面强弱与主线持续性,给出下一交易日值得观察的板块方向和验证条件;"
             "消息催化一节请直接从量价异动给出可能的催化逻辑结论,不要编造具体消息,也不要复述本说明。)",
         ])
 
@@ -289,7 +369,7 @@ async def recap_market_stream(
         quote_service / depth_service: 可选,数据装配依赖。
         as_of: 复盘日期,None 取最新有数据日。
         focus: 用户追加的复盘关注点。
-        news: 预检索的新闻列表(P1 不传,留 None 走降级说明;P3 由 news_search 注入)。
+        news: 可选的预检索新闻列表; 未传入时自动尝试通过可选新闻插件获取。
     """
     # 1. 装配市场总览
     overview = build_market_overview(repo, quote_service, depth_service, as_of)
@@ -326,7 +406,8 @@ async def recap_market_stream(
         from app.services import auction_benchmark as auction_benchmark_svc
 
         bench_ctx = auction_benchmark_svc.build_recap_context(repo.store.data_dir)
-        user_prompt = _build_user_prompt(overview, news or [], focus, lhb_ctx, bench_ctx)
+        recap_news = news if news is not None else await _load_market_news()
+        user_prompt = _build_user_prompt(overview, recap_news, focus, lhb_ctx, bench_ctx)
         got_content = False
         collected: list[str] = []
         async for delta in stream_ai_text(

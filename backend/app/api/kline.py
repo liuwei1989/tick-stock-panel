@@ -5,7 +5,7 @@ import gzip
 import json
 import logging
 import math
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 from functools import lru_cache
@@ -418,6 +418,26 @@ def get_daily(
 
     # 从 enriched 表读取 (已含前复权 OHLCV + 技术指标 + 信号); ETF/指数走独立存储
     df = repo.get_daily_asset(asset_type, symbol, start, end)
+
+    # Backfill sparse, long-range stock history through the configured provider,
+    # then reread the repository. Short ranges and complete results stay local.
+    if asset_type == "stock" and (end - start).days >= 90 and df.height <= 5:
+        try:
+            capset = getattr(request.app.state, "capabilities", None)
+            if capset is not None:
+                kline_sync.sync_and_persist_daily_batch(
+                    [symbol],
+                    repo,
+                    capset,
+                    start_date=datetime.combine(start, time.min),
+                    end_date=datetime.combine(end, time.max),
+                )
+                refreshed = repo.get_daily_asset(asset_type, symbol, start, end)
+                if refreshed.height > df.height:
+                    df = refreshed
+        except Exception as e:  # noqa: BLE001
+            # 历史补数失败时仍返回已有本地数据，不让图表详情请求失败。
+            logger.warning("日K区间历史补齐失败 %s [%s, %s]: %s", symbol, start, end, e)
 
     if df.is_empty():
         try:

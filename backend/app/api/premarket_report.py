@@ -86,7 +86,9 @@ async def generate(request: Request, req: GenerateIn):
         pr.save_report(data_dir, structured)
         return {"ok": True, "fallback": True, "report": structured}
 
-    prompt = pr.build_ai_prompt(data_dir, as_of, req.focus)
+    from app.services.market_recap import _load_market_news
+    news = await _load_market_news()
+    prompt = pr.build_ai_prompt(data_dir, as_of, req.focus, news)
     if not prompt:
         return {"ok": False, "message": "素材不足, 无法生成 AI 研报"}
 

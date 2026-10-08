@@ -79,6 +79,7 @@ const emptyRule = (preset?: Partial<MonitorRule>): MonitorRule => ({
 })
 
 export function RuleEditor({ rule, preset, simple, onClose, onSaved }: Props) {
+  const extraChannels = useQuery({ queryKey: QK.notificationChannels, queryFn: api.notificationChannels })
   const qc = useQueryClient()
   const options = useQuery({ queryKey: QK.monitorRuleOptions, queryFn: api.monitorRuleOptions })
   const { data: prefs } = usePreferences()
@@ -1580,6 +1581,12 @@ export function RuleEditor({ rule, preset, simple, onClose, onSaved }: Props) {
         </div>
 
         {/* 勾选了某渠道但该渠道地址未配置 → 提示前往设置 */}
+        <div className="flex flex-wrap gap-3">
+          {extraChannels.data?.channels.map(channel => <label key={channel.id} className="flex items-center gap-1 text-xs text-secondary">
+            <input type="checkbox" checked={(draft.webhook_channels ?? []).includes(channel.id)} onChange={() => toggleChannel(channel.id)} />
+            {channel.label}{channel.configured ? '' : '（未配置）'}
+          </label>)}
+        </div>
         {(draft.webhook_channels ?? []).length > 0 && (() => {
           const selected = draft.webhook_channels ?? []
           const unconfigured: string[] = []
@@ -1587,6 +1594,7 @@ export function RuleEditor({ rule, preset, simple, onClose, onSaved }: Props) {
           if (selected.includes('wecom') && !wecomConfigured) unconfigured.push('企业微信')
           if (selected.includes('custom') && !customConfigured) unconfigured.push('第三方系统')
           if (selected.includes('email') && !emailConfigured) unconfigured.push('邮件')
+          extraChannels.data?.channels.forEach(ch => { if (selected.includes(ch.id) && !ch.configured) unconfigured.push(ch.label) })
           if (unconfigured.length === 0) return null
           return (
             <p className="text-[10px] leading-relaxed text-warning/80">
@@ -1602,6 +1610,7 @@ export function RuleEditor({ rule, preset, simple, onClose, onSaved }: Props) {
           if (selected.includes('wecom') && wecomConfigured) ready.push('企业微信')
           if (selected.includes('custom') && customConfigured) ready.push('第三方系统')
           if (selected.includes('email') && emailConfigured) ready.push('邮件')
+          extraChannels.data?.channels.forEach(ch => { if (selected.includes(ch.id) && ch.configured) ready.push(ch.label) })
           if (ready.length === 0) return null
           return (
             <p className="text-[10px] leading-relaxed text-muted">

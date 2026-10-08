@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import date, timedelta
+import hashlib
 from types import SimpleNamespace
 
 import numpy as np
@@ -59,6 +60,10 @@ class _EngineStub:
         self.sim_panel: pl.DataFrame | None = None
         self.sim_matrix = None
         self.sim_entries: pl.Series | None = None
+        self.generation = None
+
+    def data_generation(self, asset_type: str = "stock") -> str | None:
+        return self.generation
 
     def load_panel(self, symbols, start: date, end: date, columns=None, asset_type: str = "stock") -> pl.DataFrame:
         self.load_count += 1
@@ -119,6 +124,64 @@ class _EngineStub:
             per_symbol_stats=[],
             stats={"total_return": 0.0, "n_trades": 0},
         )
+
+
+def test_research_manifest_captures_reproducible_inputs(tmp_path):
+    strategy_file = tmp_path / "strategy.py"
+    strategy_source = "# strategy fixture\nreturn True\n"
+    strategy_file.write_text(strategy_source, encoding="utf-8")
+    strategy = _strategy(file_path=strategy_file, source="custom")
+    engine = _EngineStub(pl.DataFrame())
+    engine.generation = "stock:generation-7"
+    service = StrategyBacktestService(
+        engine=engine,
+        strategy_engine=_StrategyEngineStub(strategy),
+    )
+    config = StrategyBacktestConfig(
+        strategy_id="test",
+        symbols=["A"],
+        start=date(2024, 1, 1),
+        end=date(2024, 1, 31),
+        params={"window": 20},
+        overrides={"score_min": 65},
+        entry_fill="close_t",
+        exit_fill="open_t+1",
+        fees_pct=0.0003,
+        commission_pct=0.0002,
+        stamp_tax_pct=0.0005,
+        slippage_bps=8.0,
+        max_positions=4,
+        max_exposure_pct=0.75,
+        position_sizing="score_weight",
+        holding_days=7,
+        minute_fill=True,
+        mode="full",
+    )
+
+    manifest = service._research_manifest(config, strategy, {"window": 20})
+
+    assert manifest["strategy_code_sha256"] == hashlib.sha256(
+        strategy_source.encode("utf-8")
+    ).hexdigest()
+    assert manifest["data_generation"] == "stock:generation-7"
+    assert manifest["strategy_source"] == "custom"
+    assert manifest["params"] == {"window": 20}
+    assert manifest["overrides"] == {"score_min": 65}
+    assert manifest["execution"] == {
+        "mode": "full",
+        "entry_fill": "close_t",
+        "exit_fill": "open_t+1",
+        "fees_pct": 0.0003,
+        "commission_pct": 0.0002,
+        "stamp_tax_pct": 0.0005,
+        "slippage_bps": 8.0,
+        "max_positions": 4,
+        "max_exposure_pct": 0.75,
+        "position_sizing": "score_weight",
+        "holding_days": 7,
+        "minute_fill": True,
+    }
+    assert manifest["metrics_methodology"] == "candidate_daily_average"
 
 
 def test_basic_filter_only_limits_entries_not_panel_rows():

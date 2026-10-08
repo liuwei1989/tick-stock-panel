@@ -11,6 +11,7 @@ from app.services.cockpit import (
     cockpit_overview,
     cockpit_session,
     data_health,
+    decision_dashboard,
     mainline_certification,
 )
 
@@ -65,6 +66,29 @@ def test_cockpit_empty_data_dir(tmp_path):
     assert not out["mainline"]["available"]
     assert not out["regime"]["available"]
     assert all(not l["partitions"] for l in out["health"]["layers"])
+    assert out["decision_dashboard"]["available"] is False
+
+
+def test_decision_dashboard_uses_persisted_facts_and_next_action(monkeypatch):
+    from app.services import stock_reports
+
+    monkeypatch.setattr(stock_reports, "list_reports", lambda: [{
+        "symbol": "600519.SH", "name": "示例股", "summary": "关键价位摘要", "created_at": "2026-09-30T09:00:00",
+    }])
+    out = decision_dashboard(
+        {"available": True, "score": 72.0, "state_label": "活跃", "phase_label": "主升", "date": "2026-09-29"},
+        {"available": True, "as_of": "2026-09-29", "items": [{
+            "member": "人工智能", "level": "gold", "avg5_score": 80.0,
+            "streak_days": 3, "leader_symbol": "000001",
+        }]},
+        {"latest_plan": None},
+        [{"level": "warn", "title": "数据滞后", "detail": "需同步", "action": "pipeline", "action_label": "同步"}],
+    )
+    assert out["score"] == 72.0
+    assert out["mainlines"][0]["member"] == "人工智能"
+    assert out["risk_alerts"][0]["title"] == "数据滞后"
+    assert out["next_action"]["action"] == "pipeline"
+    assert out["latest_agent_report"]["symbol"] == "600519.SH"
 
 
 def test_data_health_partitions(tmp_path):

@@ -13,6 +13,7 @@ import threading
 from pathlib import Path
 
 from app.services.fs_utils import atomic_write_text
+from app.services.notification_channels import ALL_CHANNEL_IDS
 
 logger = logging.getLogger(__name__)
 
@@ -589,7 +590,7 @@ def set_depth_finalize_time(hour: int, minute: int) -> dict:
 
 # 监控与复盘共用的外部推送渠道白名单。
 # 多选: 不推送 = 空数组, 而非 'none'
-PUSH_CHANNELS = {"feishu", "wecom", "custom", "email"}
+PUSH_CHANNELS = set(ALL_CHANNEL_IDS)
 
 
 def get_review_schedule() -> dict:

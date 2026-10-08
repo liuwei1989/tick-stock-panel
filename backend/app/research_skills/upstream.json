@@ -1,0 +1,23 @@
+{
+  "repository": "https://github.com/ZhuLinsen/daily_stock_analysis",
+  "revision": "d3fee51a9e5ebec756fe8184c1d13b2accf5e39f",
+  "source_directory": "strategies",
+  "license": "MIT",
+  "files": {
+    "bottom_volume.yaml": "8f762cb4c6334cecca9a5b6b3e893ad2843633f506753b3f8260dea7bdeb2a31",
+    "box_oscillation.yaml": "981f1c2219610d604a2cdb66f6a43817f9567e4a6b624cabb7946b8d4f7a9de4",
+    "bull_trend.yaml": "089cc4cd3dc5c2781cb2b67703def0159fcbd49fcecda60116e62a76e007ea3b",
+    "chan_theory.yaml": "4d7974df29babc8b7478e316b154934e7453cb9fc71448e2bdddbd61fb0c9d1c",
+    "dragon_head.yaml": "122f28aed3059d9707f860bc8d1a7729702dcae5bc15a7f45ebebb291e0c5e1f",
+    "emotion_cycle.yaml": "9201ba5441605c797ef4cfe1b8f29c8e619521b1dacfce59bf62349e817169c3",
+    "event_driven.yaml": "bead62b0393c231fd439582eafe6e12662b1c6cee2822d3c02de4d93e33211f6",
+    "expectation_repricing.yaml": "8b395facc5d730f955face232e2c9b5763a443ce6c0a27fe48743fab2f6b21db",
+    "growth_quality.yaml": "b2e85adf0a71def6cf048c74d8ac57807ddd24d277c87a40613b27a9ee6f0725",
+    "hot_theme.yaml": "018d60f50700c6393b4bc1ce6722fca7c51253a1b22e9042a14c54d502a3fdc8",
+    "ma_golden_cross.yaml": "bba6173ebfa5f6360a40d7ca3fab4de48ec04491743f5716e40b0a6281d48077",
+    "one_yang_three_yin.yaml": "00ced3ab9e6fed39ed3bf8f2817205a370b6d39e635796fa3bf26815460018de",
+    "shrink_pullback.yaml": "25031363d5b5679016d252da20d87a4e4a79e7033a054ff8dbb55a71339515cd",
+    "volume_breakout.yaml": "241ed058941ccf8458dde3588563da6d2f3e1ff47f2bc1f232c4e29a36250c04",
+    "wave_theory.yaml": "4cd40a644c5b526fbe3bd7cf140b3ebbb83859f3bc053552f589139f304dd06e"
+  }
+}

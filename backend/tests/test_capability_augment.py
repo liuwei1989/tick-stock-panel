@@ -85,6 +85,27 @@ def test_minute_custom_source_grants_minute_batch(monkeypatch):
     assert capset.has(Cap.KLINE_MINUTE_BATCH)
 
 
+def test_builtin_zzshare_minute_routing_grants_minute_batch(monkeypatch):
+    """内置 registry 源 (zzshare) 与插件/自定义源同标准: 路由为分钟源即补授
+    KLINE_MINUTE_BATCH — 不 mock custom loader, 走真实 registry capabilities。
+
+    修复前 zzshare 不在 custom loader 内 → provider_has_dataset 恒 False →
+    路由到 Zzshare 的用户仍被 /minute-batch 与分钟回测的 403 拦住。
+    """
+    _set_providers(monkeypatch, minute="zzshare")
+    capset = CapabilitySet()
+    _augment_custom_sources(capset)
+    assert capset.has(Cap.KLINE_MINUTE_BATCH)
+
+
+def test_builtin_zzshare_daily_routing_grants_daily_batch(monkeypatch):
+    """内置源其他数据集同样增广: zzshare 声明 daily → 路由即补授日K批量。"""
+    _set_providers(monkeypatch, daily="zzshare")
+    capset = CapabilitySet()
+    _augment_custom_sources(capset)
+    assert capset.has(Cap.KLINE_DAILY_BATCH)
+
+
 def test_depth5_custom_source_grants_depth_batch(monkeypatch):
     """五档独立路由到声明 depth5 的自定义源时补授批量五档能力。"""
     _set_providers(monkeypatch, depth5="mock_src")

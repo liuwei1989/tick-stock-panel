@@ -1642,7 +1642,9 @@ class QuoteService:
             custom_secret = secrets_store.get_custom_webhook_secret()
             email_config = preferences.get_email_smtp_config()
             email_password = secrets_store.get_email_smtp_password()
-            if not any((feishu_url, wecom_url, custom_url, email_adapter.is_configured(email_config))):
+            from app.services import notification_channels as extra_channels
+
+            if not any((feishu_url, wecom_url, custom_url, email_adapter.is_configured(email_config), extra_channels.configs())):
                 return
 
             # 反查规则, 过滤出启用推送的事件
@@ -1664,6 +1666,10 @@ class QuoteService:
                 body = f"{symbol} {name} {message}".strip() if symbol else (message or name)
                 # 补上触发时的现价/涨跌幅, 让推送可执行 (止损到底触发在哪个价位)
                 body = _body_with_quote(body, ev)
+                for channel in channels:
+                    if channel in extra_channels.CHANNELS:
+                        event_key = f"{ev.get('rule_id')}|{ev.get('symbol')}|{ev.get('type')}|{ev.get('ts') or ev.get('timestamp') or ''}|{message}"
+                        enqueued += int(extra_channels.dispatch(_WEBHOOK_EXECUTOR, channel, title, body, event_key=event_key))
                 # 提交到独立线程池, 不阻塞行情轮询线程 (webhook 慢/重试不拖累实时行情+告警)。
                 # 按渠道独立投递: 只投递同时“已勾选 + 已配置”的渠道。
                 # 应用内 alerts.jsonl 记录与 SSE 已在前面完成, 不依赖 webhook 成败,

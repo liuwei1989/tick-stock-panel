@@ -601,8 +601,30 @@ def get_preferences() -> dict:
 def list_data_sources() -> dict:
     """列出已加载的数据源 (内置 / 插件 / 用户自定义)。"""
     from app.data_providers import custom as custom_sources
+    from app.data_providers import registry as provider_registry
+
+    # TickFlow remains first and retains its established display contract. Other
+    # registry-backed providers (for example zzshare) are surfaced as source cards.
+    builtin = [{
+        "name": "tickflow",
+        "display_name": "TickFlow",
+        "datasets": ["daily", "adj_factor", "realtime", "minute"],
+    }]
+    for name, provider_cls in provider_registry.builtin_sources().items():
+        caps = getattr(provider_cls, "capabilities", None)
+        datasets = [
+            dataset
+            for dataset in ("daily", "adj_factor", "realtime", "minute", "depth5", "financial")
+            if caps is not None and getattr(caps, dataset, False)
+        ]
+        builtin.append({
+            "name": name,
+            "display_name": getattr(provider_cls, "display", None) or name,
+            "datasets": datasets,
+        })
+
     return {
-        "builtin": [{"name": "tickflow", "display_name": "TickFlow", "datasets": ["daily", "adj_factor", "realtime", "minute"]}],
+        "builtin": builtin,
         "plugins": custom_sources.list_plugins(),
         "custom": custom_sources.list_sources(),
         "errors": custom_sources.errors(),

@@ -129,6 +129,7 @@ def test_calc_stats_emits_robustness_fields():
     assert stats["worst"] == round(-0.06, 4)
     assert stats["median_pnl"] == round(float(np.median([0.10, -0.05, 0.08, -0.06])), 4)
     assert stats["avg_holding_days"] == round(float(np.mean([3, 2, 5, 4])), 1)
+    assert stats["metric_basis"] == "per_trade_approximation"
 
 
 def test_calc_stats_empty_trades_safe():
@@ -149,6 +150,8 @@ def test_portfolio_stats_emits_robustness_fields():
     stats = BacktestEngine._calc_portfolio_stats(equity_curve, trades, 100_000)
     for k in ("sortino", "mc_maxdd_p50", "mc_maxdd_p95", "median_pnl", "best", "worst", "avg_holding_days"):
         assert k in stats, f"缺字段 {k}"
+    assert stats["metric_basis"] == "daily_equity_curve"
+    assert stats["annualization"] == "252_trading_days"
 
 
 def test_independent_candidate_stats_emits_sortino_and_mc():

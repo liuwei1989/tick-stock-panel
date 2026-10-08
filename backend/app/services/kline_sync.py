@@ -853,13 +853,15 @@ def _write_minute_partition(df: pl.DataFrame, minute_dir) -> int:
 def _resolve_minute_provider(
     provider_name: str,
 ) -> tuple[object | None, bool, str | None]:
-    """统一解析 custom minute provider, 把所有 resolver 调用纳入同一异常边界。
+    """统一解析分钟 provider (内置 registry 源 + custom 源), 统一异常边界。
 
     供 _try_custom_minute 和 sync_and_persist_minute 共用, 避免两处分别调
     provider_has_dataset / get_provider 时漏掉异常边界 (Issue 2 加固项)。
 
     返回 (provider, should_fallback_to_tickflow, error_msg):
       - provider_name == "tickflow" 或未配 minute dataset → (None, True, None)  静默降级
+      - 内置 registry 源 (zzshare) 声明 minute → (provider, False, None)
+      - 内置源存在但未声明 minute → (None, True, None)  静默降级
       - resolver 异常 (registry 损坏 / 插件失效 / provider name 不存在) → (None, True, str(e))
       - 成功 → (provider, False, None)
 
@@ -868,6 +870,21 @@ def _resolve_minute_provider(
     """
     if provider_name == "tickflow":
         return (None, True, None)
+    # 内置一等源 (registry, 如 zzshare): 与插件/自定义源同级参与分钟路由。
+    # 能力矩阵已把 zzshare 列为分钟K候选, 但它不在 custom loader 的
+    # _PROVIDERS 内 — 不在此分流会永远 fallback TickFlow, 低档位用户
+    # 即使把分钟源切成 Zzshare 仍被 403 "需要 Pro+" 拦住 (矩阵声明与
+    # 运行时路由断裂)。声明以 provider 类的 capabilities.minute 为准。
+    try:
+        from app.data_providers import registry as provider_registry
+        builtin_cls = provider_registry.builtin_sources().get(provider_name)
+        if builtin_cls is not None:
+            caps = getattr(builtin_cls, "capabilities", None)
+            if caps is not None and getattr(caps, "minute", False):
+                return (provider_registry.get_provider(provider_name), False, None)
+            return (None, True, None)
+    except Exception as e:  # noqa: BLE001
+        return (None, True, str(e))
     from app.data_providers import custom as custom_sources
     try:
         if not custom_sources.provider_has_dataset(provider_name, "minute"):

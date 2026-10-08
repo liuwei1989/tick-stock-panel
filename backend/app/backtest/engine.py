@@ -2931,6 +2931,8 @@ class BacktestEngine:
 
         durations = np.array([t.duration for t in trades], dtype=float)
         stats = {
+            "metric_basis": "per_trade_approximation",
+            "metric_warning": "未按账户现金与持仓市值重放；请使用组合回测路径评估资金曲线",
             "total_return": round(float(total_return), 4),
             "annual_return": round(float(annual_return), 4),
             "max_drawdown": round(float(max_dd), 4),
@@ -3057,6 +3059,8 @@ class BacktestEngine:
         stats = {
             "mode": "full",
             "full_kind": "candidate_execution",
+            "metric_basis": "candidate_daily_average",
+            "metric_warning": "按出场日候选收益均值构造，不代表可交易账户净值",
             "n_candidates": int(n_candidates),
             "n_trades": int(len(trades)),
             "n_days": int(len(daily_returns)),
@@ -3152,6 +3156,8 @@ class BacktestEngine:
         avg_win = float(np.mean(wins)) if len(wins) else 0.0
         avg_loss = abs(float(np.mean(losses))) if len(losses) else 0.0
         stats = {
+            "metric_basis": "daily_equity_curve",
+            "annualization": "252_trading_days",
             "total_return": round(float(total_return), 4),
             "annual_return": round(float(annual_return), 4),
             "max_drawdown": round(float(max_drawdown), 4),

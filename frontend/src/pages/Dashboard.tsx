@@ -2,7 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { Link, useNavigate } from 'react-router-dom'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { motion, AnimatePresence } from 'framer-motion'
-import { ArrowRight, ArrowUpRight, Check, ClipboardCheck, Database, Gauge, GripVertical, Info, Loader2, Play, RefreshCw, RotateCcw, Sparkles, Timer } from 'lucide-react'
+import { ArrowRight, ArrowUpRight, Check, ClipboardCheck, Database, Gauge, GripVertical, Info, Loader2, Play, RefreshCw, RotateCcw, Sparkles, Timer, Star, Search, Eye } from 'lucide-react'
 import { DatePicker } from '@/components/DatePicker'
 import { api, type AlertEvent, type TodayActions } from '@/lib/api'
 import { QK } from '@/lib/queryKeys'
@@ -42,8 +42,23 @@ function TodayActionCenter({ data }: { data: TodayActions | undefined }) {
       : action?.tone === 'accent'
         ? 'border-accent/40 bg-accent/5'
         : 'border-border bg-surface/80'
-  const phase = data?.market.phase_label || data?.market.state_label || '等待市场环境'
-  const topMainline = data?.market.mainline?.slice(0, 3) ?? []
+  const hasWatchlist = (data?.watchlist.count ?? 0) > 0
+  const actionLabel = action?.key === 'sync_data'
+    ? '先准备好今天的数据'
+    : action?.key === 'review_risk'
+      ? '先看看需要注意的股票'
+      : action?.key === 'review_watchlist'
+        ? (hasWatchlist ? '先看看你的自选股' : '先添加一只你关注的股票')
+        : action?.key === 'reduce_risk'
+          ? '今天先观察，别急着买'
+          : '先看看今天市场里比较强的方向'
+  const actionReason = action?.key === 'sync_data'
+    ? '系统还没有准备好今天的行情，点一下就会自动处理。'
+    : action?.key === 'review_risk'
+      ? '系统发现了需要你确认的提醒，先处理这些再做其他决定。'
+      : action?.key === 'review_watchlist' && !hasWatchlist
+        ? '没有自选股时，系统无法根据你的关注范围给出提醒。'
+        : '你不需要先看懂指标，按这个步骤浏览即可。'
 
   if (!data) return null
   return (
@@ -53,35 +68,81 @@ function TodayActionCenter({ data }: { data: TodayActions | undefined }) {
           <ClipboardCheck className="mt-0.5 h-4 w-4 shrink-0 text-accent" />
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-1.5">
-              <h2 className="text-xs font-semibold text-foreground">今日操作台</h2>
-              <span className="rounded-full border border-border/70 bg-elevated/60 px-1.5 py-0.5 text-[10px] text-secondary">{phase}</span>
-              {data.market.score != null && <span className="font-mono text-[10px] text-muted">环境 {data.market.score.toFixed(0)}</span>}
+              <h2 className="text-base font-semibold text-foreground">今天打开系统，先做这件事</h2>
             </div>
-            <p className="mt-0.5 text-[11px] text-secondary">{action?.label}：{action?.reason}</p>
+            <p className="mt-1 text-sm font-medium text-foreground">{actionLabel}</p>
+            <p className="mt-0.5 text-xs text-secondary">{actionReason}</p>
           </div>
         </div>
         <button
           onClick={() => navigate(actionPath)}
-          className="inline-flex shrink-0 items-center gap-1 rounded-btn border border-border bg-elevated px-2 py-1 text-[11px] font-medium text-secondary transition-colors hover:border-accent/50 hover:text-foreground"
+          className="inline-flex shrink-0 items-center gap-1 rounded-btn bg-accent px-3 py-2 text-xs font-medium text-white transition-colors hover:bg-accent/90"
         >
-          执行复核 <ArrowRight className="h-3 w-3" />
+          {action?.key === 'sync_data' ? '开始准备' : action?.key === 'review_risk' ? '查看提醒' : action?.key === 'review_watchlist' && !hasWatchlist ? '添加自选' : '开始操作'} <ArrowRight className="h-3 w-3" />
         </button>
       </div>
-      <div className="mt-1.5 grid grid-cols-1 gap-1.5 sm:grid-cols-3">
-        <div className="text-[10px] text-muted">数据日期 <span className="font-mono text-secondary">{data.as_of || '暂无'}</span></div>
-        <div className="text-[10px] text-muted">自选 <span className="font-mono text-secondary">{data.watchlist.count} 只</span></div>
-        <div className="text-[10px] text-muted">近一日告警 <span className={`font-mono ${data.risks.length ? 'text-warning' : 'text-secondary'}`}>{data.risks.length} 条</span></div>
+      <div className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-[11px] text-muted">
+        <span>系统已准备：{data.as_of ? '是' : '否'}</span>
+        <span>你的自选：{data.watchlist.count} 只</span>
+        <span>需要注意：{data.risks.length} 条</span>
       </div>
-      {topMainline.length > 0 && (
-        <div className="mt-1.5 flex min-w-0 items-center gap-1.5 overflow-x-auto text-[10px] text-muted">
-          <span className="shrink-0">主线</span>
-          {topMainline.map((item, index) => (
-            <span key={`${item.member}-${index}`} className="shrink-0 rounded border border-border/70 bg-elevated/50 px-1.5 py-0.5 text-secondary">
-              {index + 1}. {item.member}
-            </span>
-          ))}
+    </section>
+  )
+}
+
+function DataCompletenessNotice({ status, onRepair, running }: { status: any; onRepair: () => void; running: boolean }) {
+  const daily = status?.daily
+  const enriched = status?.enriched
+  if (!daily && !enriched) return null
+  const dailyLatest = daily?.latest_date
+  const enrichedLatest = enriched?.latest_date
+  const incomplete = !dailyLatest || !enrichedLatest || dailyLatest !== enrichedLatest || (daily?.symbols_covered ?? 0) === 0 || (enriched?.symbols_covered ?? 0) === 0
+  if (!incomplete) return null
+  return (
+    <section className="mb-3 rounded-card border border-warning/40 bg-warning/5 px-4 py-3">
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold text-foreground">数据还没准备完整，系统正在自动补全</h2>
+          <p className="mt-1 text-xs text-secondary">当前行情日期或股票覆盖不一致，系统正在自动补齐缺失的日线数据。</p>
         </div>
-      )}
+        <button onClick={onRepair} disabled={running} className="inline-flex items-center gap-1.5 rounded-btn border border-border bg-elevated px-3 py-2 text-xs font-medium text-secondary hover:text-foreground disabled:opacity-50">
+          {running ? <Loader2 className="size-3.5 animate-spin" /> : <RefreshCw className="size-3.5" />}
+          {running ? '自动处理中' : '立即重试'}
+        </button>
+      </div>
+    </section>
+  )
+}
+
+function BeginnerGuide() {
+  const steps = [
+    { icon: Database, title: '先准备数据', text: '点击“立即获取数据”，等同步完成。', to: '#data' },
+    { icon: Star, title: '加入自选', text: '搜索你关注的股票，加入自选列表。', to: '/watchlist' },
+    { icon: Eye, title: '看懂一只股票', text: '打开个股分析，先看趋势和风险提示。', to: '/stock-analysis' },
+    { icon: Search, title: '再尝试选股', text: '熟悉后再使用策略扫描，不需要先学指标。', to: '/screener' },
+  ]
+  return (
+    <section className="mb-3 rounded-card border border-accent/30 bg-accent/5 p-4" aria-label="新手操作指南">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="text-base font-semibold text-foreground">第一次使用？照着这 4 步就好</h2>
+          <p className="mt-1 text-xs text-secondary">不用先理解指标。先获取数据，再从一只股票开始。</p>
+        </div>
+        <span className="rounded-full bg-surface/80 px-2 py-1 text-[11px] text-muted">新手模式</span>
+      </div>
+      <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        {steps.map(({ icon: Icon, title, text, to }, index) => (
+          <Link key={title} to={to} className="group rounded-lg border border-border/70 bg-surface/70 p-3 transition-colors hover:border-accent/50">
+            <div className="flex items-center gap-2">
+              <span className="grid size-6 place-items-center rounded-full bg-accent/15 text-xs font-semibold text-accent">{index + 1}</span>
+              <Icon className="size-4 text-accent" />
+              <span className="text-sm font-medium text-foreground">{title}</span>
+            </div>
+            <p className="mt-2 text-xs leading-5 text-secondary">{text}</p>
+            <span className="mt-2 inline-flex items-center gap-1 text-[11px] text-accent">开始 <ArrowRight className="size-3 transition-transform group-hover:translate-x-0.5" /></span>
+          </Link>
+        ))}
+      </div>
     </section>
   )
 }
@@ -185,6 +246,11 @@ export function Dashboard() {
     || fetchStatus.data?.status === 'pending'
   const fetchFailed = fetchStatus.data?.status === 'failed'
   const fetchSucceeded = fetchStatus.data?.status === 'succeeded'
+  const dataNeedsRepair = !!ds && !hasNoData && (
+    (ds.daily?.latest_date ?? '') !== (ds.enriched?.latest_date ?? '')
+    || (ds.daily?.symbols_covered ?? 0) === 0
+    || (ds.enriched?.symbols_covered ?? 0) === 0
+  )
 
   // 首次使用且无数据 → 自动弹一次引导弹窗(同会话只弹一次)
   // 「开始获取」前若无除权因子能力, 先弹前置确认 (adjGate.guard)
@@ -196,6 +262,15 @@ export function Dashboard() {
     sessionStorage.setItem('tf_welcome_shown', '1')
     setShowWelcomeModal(true)
   }, [hasNoData, settings.data?.onboarding_completed])
+
+  // 每次打开首页自动修复数据缺口。pipelineRun 是后端单飞接口，已有任务时会复用，
+  // 因此切页、刷新或多个标签页同时打开都不会重复拉取数据。
+  const autoRepairTriedRef = useRef(false)
+  useEffect(() => {
+    if (!dataNeedsRepair || autoRepairTriedRef.current || fetchJobId || isFetching) return
+    autoRepairTriedRef.current = true
+    startFetch.mutate()
+  }, [dataNeedsRepair, fetchJobId, isFetching, startFetch])
 
   // 同步完成后刷新看板数据
   useEffect(() => {
@@ -293,6 +368,8 @@ export function Dashboard() {
           providerLabel={providerLabel}
         />
       )}
+      {!hasNoData && <BeginnerGuide />}
+      {!hasNoData && <DataCompletenessNotice status={ds} onRepair={() => startFetch.mutate()} running={isFetching} />}
       {/* 首次使用自动弹窗(同会话仅一次) */}
       <AnimatePresence>
         {showWelcomeModal && (

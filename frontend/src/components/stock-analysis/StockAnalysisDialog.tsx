@@ -1,3 +1,4 @@
+import { ResearchArtifactView } from '@/components/research/ResearchArtifactView'
 import { useEffect, useRef, useState, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import {
@@ -66,7 +67,8 @@ export function StockAnalysisDialog({ task, mode, minimized }: Props) {
   const handleStartNew = useCallback(async () => {
     if (!task) return
     const name = 'name' in task ? task.name : ''
-    await startAnalysis(task.symbol, name, focus.trim())
+    const skills = 'phase' in task ? task.skillIds ?? [] : task.skill_ids ?? []
+    await startAnalysis(task.symbol, name, focus.trim(), task.mode ?? 'standard', skills)
   }, [task, focus])
 
   const handleCopy = async () => {
@@ -166,7 +168,28 @@ export function StockAnalysisDialog({ task, mode, minimized }: Props) {
                   <Loader2 className="absolute -inset-1 h-12 w-12 text-sky-400/40 animate-spin" style={{ animationDuration: '3s' }} />
                 </div>
                 <div className="text-xs text-secondary">AI 正在分析行情与关键价位…</div>
-                <div className="text-[10px] text-muted">读取日 K / 技术指标 / 压力支撑 / 财务,生成四维分析</div>
+                <div className="text-[10px] text-muted">
+                  {task && 'agentStages' in task && task.agentStages.length
+                    ? `多阶段分析 · ${task.agentStages[task.agentStages.length - 1].label}`
+                    : '读取日 K / 技术指标 / 压力支撑 / 财务,生成四维分析'}
+                </div>
+                {task && 'agentStages' in task && task.agentStages.length > 0 && (
+                  <div className="mt-3 flex flex-wrap justify-center gap-1.5">
+                    {task.agentStages.map((stage) => (
+                      <span
+                        key={stage.stage}
+                        className={cn(
+                          'rounded-full border px-2 py-0.5 text-[10px]',
+                          stage.status === 'completed' && 'border-emerald-400/25 bg-emerald-400/5 text-emerald-300',
+                          stage.status === 'degraded' && 'border-amber-400/25 bg-amber-400/5 text-amber-300',
+                          stage.status === 'started' && 'border-sky-400/25 bg-sky-400/5 text-sky-300',
+                        )}
+                      >
+                        {stage.status === 'completed' ? '✓' : stage.status === 'degraded' ? '!' : '…'} {stage.label}
+                      </span>
+                    ))}
+                  </div>
+                )}
               </div>
             )}
 
@@ -192,6 +215,26 @@ export function StockAnalysisDialog({ task, mode, minimized }: Props) {
 
             {(content || phase === 'streaming') && (
               <div className="relative">
+                {task && 'agentStages' in task && task.agentStages.length > 0 && (
+                  <div className="mb-4 flex flex-wrap gap-1.5" aria-label="Agent 阶段轨迹">
+                    {task.agentStages.map(stage => (
+                      <span
+                        key={stage.stage}
+                        title={stage.message || (stage.failureCode ? `阶段异常：${stage.failureCode}` : stage.label)}
+                        className={cn(
+                          'rounded-full border px-2 py-0.5 text-[10px]',
+                          stage.status === 'completed' && 'border-emerald-400/25 bg-emerald-400/5 text-emerald-300',
+                          stage.status === 'degraded' && 'border-amber-400/25 bg-amber-400/5 text-amber-300',
+                          stage.status === 'started' && 'border-sky-400/25 bg-sky-400/5 text-sky-300',
+                        )}
+                      >
+                        {stage.status === 'completed' ? '✓' : stage.status === 'degraded' ? '!' : '…'} {stage.label}
+                        {stage.durationMs != null && stage.status !== 'started' ? ` · ${(stage.durationMs / 1000).toFixed(1)}s` : ''}
+                      </span>
+                    ))}
+                  </div>
+                )}
+                {task?.artifact && <ResearchArtifactView artifact={task.artifact} />}
                 <MarkdownRenderer content={content} />
                 {phase === 'streaming' && (
                   <span className="inline-block w-1.5 h-3.5 bg-sky-400 ml-0.5 align-middle animate-pulse rounded-sm" />

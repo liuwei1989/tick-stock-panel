@@ -181,20 +181,22 @@ def save_report(data_dir: Path, payload: dict) -> dict:
 
 # ───────────────────────── AI 流式研报 ─────────────────────────
 
-def build_ai_prompt(data_dir: Path, as_of: date | None = None, focus: str = "") -> str:
+def build_ai_prompt(data_dir: Path, as_of: date | None = None, focus: str = "",
+                    news: list[dict] | None = None) -> str:
     """盘前研报 AI 提示词 (基于规则版素材)。"""
     s = build_structured(data_dir, as_of)
     if not s["available"]:
         return ""
     prompt = (
         f"你是A股短线交易研究助手。今天是 {s['as_of']} 盘前。请基于以下结构化素材, "
-        "输出一份盘前研报, 严格按四段结构:"
+        "输出一份盘前研报, 严格按五段结构:"
         "\n1. 市场环境 (一句话定性, 基于环境分与主线状态)"
         "\n2. 核心主线 (Top 题材: 认证级别/强度/连板结构/身位股)"
         "\n3. 催化事件 (可从连板结构推出的潜在催化锚点, 标注为'待验证')"
-        "\n4. 核心股票 (身位股 + 连板梯队中的关键标的, 附风险提示)"
-        "\n语言简洁、可执行, 不编造素材之外的数据。\n\n"
-        f"素材:\n{json.dumps({'environment': s['environment'], 'mainline_top': s['mainline_top'], 'catalysts': s['catalysts'], 'plan': s['plan']}, ensure_ascii=False, indent=1)}"
+        "\n4. 下一交易日板块方向 (给出偏强观察/中性轮动/偏弱规避的证据判断、优先观察板块及开盘后验证条件;不作确定性预测)"
+        "\n5. 核心股票 (身位股 + 连板梯队中的关键标的, 附风险提示)"
+        "\n语言简洁、可执行, 不编造素材之外的数据;新闻催化与量价/板块结构相冲突时明确指出。\n\n"
+        f"素材:\n{json.dumps({'environment': s['environment'], 'mainline_top': s['mainline_top'], 'catalysts': s['catalysts'], 'plan': s['plan'], 'news_and_stock_catalysts': (news or [])[:10]}, ensure_ascii=False, indent=1)}"
     )
     if focus:
         prompt += f"\n\n用户特别关注: {focus}"

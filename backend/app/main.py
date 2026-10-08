@@ -388,6 +388,8 @@ async def _application_lifespan(app: FastAPI):
             mmanager.shutdown()
         if app.state.scheduler:
             app.state.scheduler.shutdown(wait=False)
+        from app.services.research_jobs import shutdown_batches
+        await shutdown_batches()
         ps = getattr(app.state, "pull_scheduler", None)
         if ps:
             ps.stop()

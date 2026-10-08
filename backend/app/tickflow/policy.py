@@ -316,11 +316,35 @@ _DATASET_CAP_MAP: tuple[tuple[str, Cap], ...] = (
 )
 
 
+def _provider_declares_dataset(provider: str, dataset: str) -> bool:
+    """判断被路由的源是否声明了某数据集: 内置 registry 源读类 capabilities,
+    插件/自定义 HTTP 源读 custom loader 的 datasets 配置。"""
+    from app.data_providers import custom as custom_sources
+
+    # 内置一等源 (如 zzshare): 不在 custom loader 内, 以 ProviderCapabilities 为准
+    try:
+        from app.data_providers import registry as provider_registry
+        builtin_cls = provider_registry.builtin_sources().get(provider)
+        if builtin_cls is not None:
+            caps = getattr(builtin_cls, "capabilities", None)
+            return bool(caps is not None and getattr(caps, dataset, False))
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        return custom_sources.provider_has_dataset(provider, dataset)
+    except Exception:  # noqa: BLE001
+        return False
+
+
 def _augment_custom_sources(capset: CapabilitySet) -> None:
-    """根据用户配置的数据源, 补充对应能力 (不覆盖 TickFlow 已有的)。"""
+    """根据用户配置的数据源, 补充对应能力 (不覆盖 TickFlow 已有的)。
+
+    内置 registry 源 (zzshare) 与插件/自定义源同标准: 被选为某数据集的
+    当前 provider 且声明了该数据集时补授对应能力 (见 _DATASET_CAP_MAP),
+    否则低档位用户路由到 zzshare 分钟源仍会被 capset.has 403 拦住。
+    """
     try:
         from app.services import preferences
-        from app.data_providers import custom as custom_sources
 
         daily_provider = preferences.get_daily_data_provider()
         adj_provider = preferences.get_adj_factor_provider()
@@ -334,7 +358,7 @@ def _augment_custom_sources(capset: CapabilitySet) -> None:
         }
         for dataset, cap in _DATASET_CAP_MAP:
             provider = active_providers[dataset]
-            if provider != "tickflow" and custom_sources.provider_has_dataset(provider, dataset):
+            if provider != "tickflow" and _provider_declares_dataset(provider, dataset):
                 capset.grant(cap)
                 logger.info(
                     "custom source '%s' provides dataset '%s': granted %s",

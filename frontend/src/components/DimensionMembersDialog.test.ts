@@ -1,6 +1,5 @@
-import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
-import { test } from 'node:test'
+import { expect, test } from 'vitest'
 
 const source = readFileSync(
   new URL('./DimensionMembersDialog.tsx', import.meta.url),
@@ -14,9 +13,8 @@ test('股票名称在前，板块标签紧随名称且代码保持独立一行',
     /<span className="min-w-0">\s*<span className="flex[^"]*">([\s\S]*?)<\/span>\s*<span className="block font-mono[^"]*">\{row\.symbol\}<\/span>/,
   )
 
-  assert.ok(identity, '股票名称、板块标签和代码应使用统一的两行身份布局')
-  assert.ok(
-    identity[1].indexOf('{row.name || row.symbol}') < identity[1].indexOf('{board &&'),
-    '板块标签应渲染在股票名称之后',
+  expect(identity, '股票名称、板块标签和代码应使用统一的两行身份布局').not.toBeNull()
+  expect(identity![1].indexOf('{row.name || row.symbol}')).toBeLessThan(
+    identity![1].indexOf('{board &&'),
   )
 })

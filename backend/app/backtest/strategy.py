@@ -594,6 +594,7 @@ class StrategyBacktestResult:
     per_symbol_stats: list[dict] = field(default_factory=list)
     strategy_info: dict = field(default_factory=dict)
     factor_attribution: dict | None = None
+    research_manifest: dict = field(default_factory=dict)
     elapsed_ms: float = 0.0
     error: str | None = None
 
@@ -735,6 +736,67 @@ class StrategyBacktestService:
     ) -> None:
         self.engine = engine
         self.strategy_engine = strategy_engine
+
+    def _research_manifest(
+        self,
+        config: StrategyBacktestConfig,
+        strategy: StrategyDef,
+        params: dict,
+    ) -> dict:
+        """Return the immutable inputs needed to audit or reproduce a run."""
+        file_hash = None
+        path = getattr(strategy, "file_path", None)
+        if path is not None:
+            try:
+                file_hash = hashlib.sha256(Path(path).read_bytes()).hexdigest()
+            except (OSError, TypeError):
+                file_hash = None
+        if file_hash is None:
+            definition = json.dumps(
+                strategy.meta,
+                sort_keys=True,
+                ensure_ascii=False,
+                default=str,
+                separators=(",", ":"),
+            )
+            file_hash = hashlib.sha256(definition.encode("utf-8")).hexdigest()
+        try:
+            generation = self.engine.data_generation(config.asset_type)
+        except Exception:  # noqa: BLE001
+            generation = None
+        metrics_methodology = (
+            "candidate_daily_average"
+            if config.mode == "full"
+            else "daily_equity_curve"
+        )
+        return {
+            "manifest_version": 1,
+            "engine_version": "backtest-metrics-v2",
+            "strategy_id": config.strategy_id,
+            "strategy_code_sha256": file_hash,
+            "strategy_source": strategy.source,
+            "asset_type": config.asset_type,
+            "start": config.start.isoformat(),
+            "end": config.end.isoformat(),
+            "params": params,
+            "overrides": config.overrides or {},
+            "execution": {
+                "mode": config.mode,
+                "entry_fill": config.entry_fill,
+                "exit_fill": config.exit_fill,
+                "fees_pct": config.fees_pct,
+                "commission_pct": config.commission_pct,
+                "stamp_tax_pct": config.stamp_tax_pct,
+                "slippage_bps": config.slippage_bps,
+                "max_positions": config.max_positions,
+                "max_exposure_pct": config.max_exposure_pct,
+                "position_sizing": config.position_sizing,
+                "holding_days": config.holding_days,
+                "minute_fill": config.minute_fill,
+            },
+            "data_generation": generation,
+            "metrics_methodology": metrics_methodology,
+        }
 
     @staticmethod
     def _matrix_prepare_signature(config: StrategyBacktestConfig) -> tuple:
@@ -1091,6 +1153,7 @@ class StrategyBacktestService:
             return _err(str(e))
 
         params = self._normalize_params(config.params or {}, s)
+        research_manifest = self._research_manifest(config, s, params)
         overrides = config.overrides or {}
         # 同回测 run 路径: 挖掘运行期也要按资产类型中和股票专属过滤键 (#215)
         basic_filter = _basic_filter_for_asset(
@@ -1153,6 +1216,7 @@ class StrategyBacktestService:
                 result_policy=result_policy,
                 run_id=run_id,
                 t0=t0,
+                research_manifest=research_manifest,
             )
 
         try:
@@ -1756,6 +1820,7 @@ class StrategyBacktestService:
             ),
             strategy_info=strategy_info,
             factor_attribution=factor_attribution,
+            research_manifest=research_manifest,
             elapsed_ms=round(elapsed, 1),
         )
 
@@ -1781,6 +1846,7 @@ class StrategyBacktestService:
         result_policy: BacktestResultPolicy,
         run_id: str,
         t0: float,
+        research_manifest: dict,
     ) -> StrategyBacktestResult:
         def _err(msg: str) -> StrategyBacktestResult:
             return StrategyBacktestResult(
@@ -2050,6 +2116,7 @@ class StrategyBacktestService:
                 else []
             ),
             strategy_info=strategy_info,
+            research_manifest=research_manifest,
             elapsed_ms=round(elapsed, 1),
         )
 

@@ -385,6 +385,7 @@ def cockpit_overview(data_dir: Path) -> dict:
     regime = _regime_summary(data_dir)
     wf_overview = _safe_wf_overview(data_dir)
     alerts = _alerts(health, mainline, regime, wf_overview)
+    decision = decision_dashboard(regime, mainline, wf_overview, alerts)
     session = cockpit_session(health=health)
     return {
         "as_of": as_of.isoformat(),
@@ -395,8 +396,77 @@ def cockpit_overview(data_dir: Path) -> dict:
         "zzshare": zz,
         "session": session,
         "alerts": alerts,
+        "decision_dashboard": decision,
         "status": ("ok" if not any(a["level"] == "error" for a in alerts)
                    else "attention"),
+    }
+
+
+def decision_dashboard(
+    regime: dict,
+    mainline: dict,
+    workflow: dict,
+    alerts: list[dict],
+) -> dict:
+    """Build a deterministic decision view for the cockpit.
+
+    This is deliberately derived from persisted project facts. It does not
+    invent an AI score or turn market observations into trading instructions.
+    The latest stock Agent report is included as a traceable reference only.
+    """
+    try:
+        from app.services import stock_reports
+
+        reports = stock_reports.list_reports()
+        latest = reports[0] if reports else None
+    except Exception as exc:  # optional report history must not break cockpit
+        logger.warning("cockpit decision report read failed: %s", exc)
+        latest = None
+
+    actionable = next((a for a in alerts if a.get("action")), None)
+    risk_alerts = [
+        {"level": a.get("level"), "title": a.get("title"), "detail": a.get("detail")}
+        for a in alerts
+        if a.get("level") in {"error", "warn"}
+    ][:5]
+    mainline_items = [
+        {
+            "member": item.get("member"),
+            "level": item.get("level"),
+            "score": item.get("avg5_score"),
+            "streak_days": item.get("streak_days"),
+            "leader_symbol": item.get("leader_symbol"),
+        }
+        for item in (mainline.get("items") or [])[:5]
+    ]
+    report_ref = None
+    if isinstance(latest, dict):
+        report_ref = {
+            "symbol": latest.get("symbol"),
+            "name": latest.get("name"),
+            "summary": latest.get("summary"),
+            "created_at": latest.get("created_at"),
+        }
+    return {
+        "available": bool(regime.get("available") or mainline.get("available") or latest),
+        "score": regime.get("score") if regime.get("available") else None,
+        "state": regime.get("state_label") or regime.get("state"),
+        "phase": regime.get("phase_label") or regime.get("phase"),
+        "as_of": regime.get("date") or mainline.get("as_of"),
+        "mainlines": mainline_items,
+        "risk_alerts": risk_alerts,
+        "next_action": ({
+            "title": actionable.get("title"),
+            "detail": actionable.get("detail"),
+            "action": actionable.get("action"),
+            "action_label": actionable.get("action_label"),
+            "action_payload": actionable.get("action_payload"),
+        } if actionable else None),
+        "workflow_status": (
+            "待复盘" if (workflow.get("latest_plan") or {}).get("status") == "pending"
+            else "已复盘" if workflow.get("latest_plan") else "暂无计划"
+        ),
+        "latest_agent_report": report_ref,
     }
 
 

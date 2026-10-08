@@ -1,3 +1,4 @@
+import { NotificationChannelsPanel } from '@/components/research/NotificationChannelsPanel'
 import { useState, useCallback, useEffect, createContext, useContext } from 'react'
 import { useQueryClient, useMutation, useQuery } from '@tanstack/react-query'
 import {
@@ -974,6 +975,7 @@ export function SettingsMonitoringPanel({ highlight }: { highlight?: string } = 
         </Card>
       </div>
     </div>
+      <NotificationChannelsPanel />
     </HighlightContext.Provider>
   )
 }

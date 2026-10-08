@@ -53,6 +53,7 @@ const DATASET_LABEL: Record<string, string> = {
   depth5: '五档',
   financial: '财务',
   full_minute: '全量分钟',
+  news: '新闻',
 }
 
 /** 能力图标 (纯展示; 能力清单本身由后端注册表驱动) */
@@ -772,6 +773,8 @@ export function SettingsDataSourcesPanel({ highlight }: { highlight?: string } =
             const installing = installMut.isPending && installMut.variables === item.name
             const uninstalling = uninstallMut.isPending && uninstallMut.variables === item.name
             const declared = new Set(item.datasets)
+            const routableDatasets = new Set(matrixCaps.map(c => c.id))
+            const canApplyRouting = item.datasets.some(dataset => routableDatasets.has(dataset))
             // TickFlow 展示注册表全量能力 (含档位锁定态); 其余源按声明过滤
             const chipCaps = isTf
               ? matrixCaps
@@ -817,6 +820,9 @@ export function SettingsDataSourcesPanel({ highlight }: { highlight?: string } =
                 {/* 能力芯片: 服务中 / 已适配 / 档位锁定 */}
                 <div className="mt-2">
                   <CapabilityChips caps={chipCaps} servingSet={servingSet} isTickFlow={isTf} />
+                  {declared.has('news') && (
+                    <span className="ml-1 inline-flex items-center rounded px-1.5 py-0.5 text-[10px] bg-accent/15 text-accent font-medium">新闻</span>
+                  )}
                 </div>
 
                 {/* 底部: 状态提示 + 操作 */}
@@ -824,6 +830,8 @@ export function SettingsDataSourcesPanel({ highlight }: { highlight?: string } =
                   <span className="text-[10px] text-muted/50 truncate min-w-0">
                     {servingCount > 0
                       ? `服务中 ${servingCount} 项能力`
+                      : plugin?.available && declared.has('news')
+                        ? '用于 AI 大盘复盘新闻上下文'
                       : pluginUnavailable
                         ? (plugin?.runtime === 'none' ? '点击配置 Key' : (plugin?.install_hint || plugin?.status || ''))
                         : ''}
@@ -847,13 +855,13 @@ export function SettingsDataSourcesPanel({ highlight }: { highlight?: string } =
                       )
                     ) : (
                       <>
-                        <button
+                        {canApplyRouting && <button
                           onClick={(e) => { e.stopPropagation(); switchProvider.mutate(item.name) }}
                           disabled={switchProvider.isPending}
                           className="rounded px-1.5 py-0.5 text-[10px] font-medium bg-accent/10 text-accent hover:bg-accent/20 transition-colors disabled:opacity-50"
                         >
                           套用
-                        </button>
+                        </button>}
                         {plugin && plugin?.runtime !== 'none' && (
                           uninstalling ? (
                             <RefreshCw className="h-2.5 w-2.5 animate-spin text-muted" />

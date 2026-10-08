@@ -88,18 +88,20 @@ export const CORE_INDEXES = [
 type CoreIndex = (typeof CORE_INDEXES)[number]
 
 const nav = [
-  { to: '/cockpit',        label: '驾驶舱',   icon: LayoutDashboard },
   { to: '/',                label: '看板',     icon: LayoutDashboard },
   { to: '/watchlist',  label: '自选',   icon: Star },
-  { to: '/screener',   label: '策略',   icon: ScanSearch },
-  { to: '/factors',    label: '因子', icon: Sigma },
-  { to: '/backtest',   label: '回测', icon: History },
   { to: '/stock-analysis',    label: '个股分析', icon: TrendingUp },
-  { to: '/limit-ladder', label: '连板梯队', icon: Flame },
+  { to: '/monitor', label: '监控中心', icon: RadioTower },
+  { to: '/review',      label: '复盘',   icon: BookOpenCheck },
+  { to: '/screener',   label: '策略',   icon: ScanSearch },
+  { to: '/backtest',   label: '回测', icon: History },
+  { to: '/paper',      label: '模拟盘',   icon: Wallet },
+  { to: '/cockpit',        label: '驾驶舱',   icon: LayoutDashboard },
+  { to: '/factors',    label: '因子', icon: Sigma },
   { to: '/concept-analysis', label: '概念分析', icon: Layers3 },
   { to: '/industry-analysis', label: '行业分析', icon: Landmark },
   { to: '/financials', label: '财务分析', icon: FileText },
-  { to: '/monitor', label: '监控中心', icon: RadioTower },
+  { to: '/limit-ladder', label: '连板梯队', icon: Flame },
   { to: '/mainline', label: '主线认证', icon: Crown },
   { to: '/premarket', label: '盘前研报', icon: Newspaper },
   { to: '/dragon-tiger', label: '龙虎榜', icon: Trophy },
@@ -109,9 +111,7 @@ const nav = [
   { to: '/abnormal', label: '异动监控', icon: Siren },
   { to: '/lots',       label: '持仓提醒', icon: Layers2 },
   { to: '/workflow',   label: '工作流',   icon: Activity },
-  { to: '/paper',      label: '模拟盘',   icon: Wallet },
   { to: '/signals',    label: '信号库',   icon: Zap },
-  { to: '/review',      label: '复盘',   icon: BookOpenCheck },
   { to: '/indices', label: '指数', icon: BarChart3 },
   { to: '/data',       label: '数据',   icon: Database },
 ] as const
@@ -359,6 +359,11 @@ function AIConfigBadge({ configured, model }: { configured?: boolean; model?: st
 // 移动端 (<768px) 不参与三态 — aside 以抽屉呈现 (见 Layout 内 drawerOpen)。
 type NavState = 'expanded' | 'rail' | 'hidden'
 
+// 首屏只保留日常工作流；低频研究/运维页面放入“更多”，仍可在菜单设置中排序或隐藏。
+const PRIMARY_NAV_PATHS = new Set([
+  '/', '/watchlist', '/stock-analysis', '/monitor', '/review', '/screener', '/backtest', '/paper',
+])
+
 export function Layout() {
   // ===== 共享 hooks (替代内联 useQuery) =====
   const { data: settingsState } = useSettings()
@@ -601,6 +606,14 @@ export function Layout() {
 
   const hiddenIds = new Set(prefs?.nav_hidden ?? [])
   const visibleNavItems = navItems.filter(n => !hiddenIds.has(n.to) && !hiddenIds.has(n.to.replace(/^\/analysis\//, '')))
+  const primaryNavItems = visibleNavItems.filter(n => PRIMARY_NAV_PATHS.has(n.to))
+  const secondaryNavItems = visibleNavItems.filter(n => !PRIMARY_NAV_PATHS.has(n.to))
+  const [moreNavExpanded, setMoreNavExpanded] = useState(false)
+  useEffect(() => {
+    if (secondaryNavItems.some(item => location.pathname === item.to || location.pathname.startsWith(`${item.to}/`))) {
+      setMoreNavExpanded(true)
+    }
+  }, [location.pathname, secondaryNavItems])
 
   const doEnableRealtime = async () => {
     await toggleQuote.mutateAsync(true)
@@ -753,7 +766,7 @@ export function Layout() {
         </div>
 
         <nav className="flex-1 min-h-0 overflow-y-auto px-2 py-3 space-y-0.5">
-          {visibleNavItems.map(({ to, label, icon: Icon, badge }) => {
+          {[...primaryNavItems, ...(railMode || moreNavExpanded ? secondaryNavItems : [])].map(({ to, label, icon: Icon, badge }) => {
             // 「自选」项 — 开启分组侧栏且未整体收起时, 渲染为可展开父项 + 二级分组
             const isWatchlistExpandable = to === '/watchlist' && groupsInNav && !railMode && watchlistGroups.length > 0
             return (
@@ -881,6 +894,18 @@ export function Layout() {
               </div>
             )
           })}
+          {!railMode && secondaryNavItems.length > 0 && (
+            <button
+              type="button"
+              onClick={() => setMoreNavExpanded(value => !value)}
+              className="mt-2 flex w-full items-center gap-3 rounded-btn px-3 py-2 text-sm text-foreground/60 transition-colors hover:bg-elevated/70 hover:text-foreground"
+              aria-expanded={moreNavExpanded}
+            >
+              {moreNavExpanded ? <ChevronDown className="h-4 w-4 shrink-0" /> : <ChevronRight className="h-4 w-4 shrink-0" />}
+              <span>更多</span>
+              <span className="ml-auto text-[11px] text-muted">{secondaryNavItems.length}</span>
+            </button>
+          )}
           <ExtensionSlot
             name="layout.navigation.extra"
             context={{ collapsed: railMode, pathname: location.pathname }}

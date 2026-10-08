@@ -149,3 +149,17 @@ def test_snapshot_ext_column_still_joins(tmp_path, _stub_enriched):
     stocks = payload["tiers"][0]["stocks"]
     assert len(stocks) == 1
     assert stocks[0]["concept_snap__concept"] == "人工智能"
+
+
+def test_limit_ladder_degrades_without_depth_service(tmp_path, _stub_enriched):
+    """五档服务未初始化时, 基础连板梯队仍应正常返回。"""
+    repo = SimpleNamespace(
+        store=SimpleNamespace(data_dir=tmp_path, db=_FakeDB(pl.DataFrame())),
+    )
+    request = SimpleNamespace(app=SimpleNamespace(state=SimpleNamespace(repo=repo)))
+
+    payload = screener_api.limit_ladder(request, as_of=_AS_OF, direction="up", ext_columns=None)
+
+    assert payload["counts"] == {"up": 1, "down": 0}
+    assert payload["tiers"][0]["stocks"][0]["symbol"] == "600000.SH"
+    assert payload["sealed_ready"] is False

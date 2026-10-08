@@ -401,9 +401,11 @@ def normalize(rule: dict) -> dict:
     if r.get("webhook_channels") is None:
         r["webhook_channels"] = ["feishu", "wecom"] if r.get("webhook_enabled") else []
     else:
+        from app.services.notification_channels import ALL_CHANNEL_IDS
+
         # 防御性过滤, 只保留合法渠道
         r["webhook_channels"] = [
-            c for c in r["webhook_channels"] if c in ("feishu", "wecom", "custom", "email")
+            c for c in r["webhook_channels"] if c in ALL_CHANNEL_IDS
         ]
     r.setdefault("created_at", datetime.now(timezone.utc).isoformat())
     return r

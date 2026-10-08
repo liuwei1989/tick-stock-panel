@@ -8,6 +8,15 @@
 // ===== Query Key 工厂 =====
 
 export const QK = {
+  notificationChannels: ['notification-channels'] as const,
+  notificationDeliveries: ['notification-deliveries'] as const,
+  researchBatches: ['research-batches'] as const,
+  researchPortfolioRisk: ['research-portfolio-risk'] as const,
+  researchSchedule: ['research-schedule'] as const,
+  researchSkills: ['research-skills'] as const,
+  researchSkillDetail: (id: string) => ['research-skill-detail', id] as const,
+  researchRuns: ['research-runs'] as const,
+  researchSignals: ['research-signals'] as const,
   // 全局 / 共享 (Layout 预取)
   capabilities:   ['capabilities'] as const,
   settings:       ['settings'] as const,
@@ -84,6 +93,7 @@ export const QK = {
                            ['kline', symbol, start, end, extColumns ?? ''] as const,
   klineLatest:          (symbol: string) => ['kline-latest', symbol] as const,
   stockLevels:          (symbol: string, days?: number) => ['stock-levels', symbol, days ?? 120] as const,
+  stockCyq:             (symbol: string, days?: number) => ['stock-cyq', symbol, days ?? 210] as const,
   klineMinute:          (symbol: string, date: string) =>
                              ['kline-minute', symbol, date] as const,
   klineMinuteRange:     (symbol: string, days: number) =>

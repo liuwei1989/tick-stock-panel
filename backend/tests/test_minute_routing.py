@@ -826,6 +826,74 @@ def test_resolve_minute_provider_success_returns_provider(monkeypatch):
     assert err is None
 
 
+# ---------- 测试 19b: 内置 registry 源 (zzshare) 分钟路由 ----------
+
+def test_resolve_minute_provider_zzshare_returns_builtin_provider():
+    """zzshare 是 registry 内置源 (不在 custom loader 内): 声明 capabilities.minute
+    → resolver 应返回 ZzshareProvider 实例且不回退 TickFlow。
+
+    此前 resolver 只认 custom loader 的源, zzshare 恒 fallback → 路由到
+    Zzshare 仍被 403 "需要 Pro+" 拦住 (矩阵声明与运行时路由断裂)。
+    """
+    from app.data_providers.zzshare_provider import ZzshareProvider
+
+    provider, fallback, err = kline_sync._resolve_minute_provider("zzshare")
+    assert isinstance(provider, ZzshareProvider)
+    assert fallback is False
+    assert err is None
+
+
+def test_minute_allowed_with_zzshare_provider_without_pro_tier(monkeypatch):
+    """权限入口: 分钟源路由到 zzshare (无 TickFlow Pro+) → 不再 403。
+
+    复现用户场景: 无 KLINE_MINUTE_BATCH 能力 + minute_data_provider=zzshare,
+    _minute_allowed 应为 True (zzshare 不依赖 TickFlow 档位)。
+    """
+    from app.api import kline as kline_api
+    from app.tickflow.capabilities import CapabilitySet
+
+    monkeypatch.setattr(
+        "app.services.preferences.get_minute_data_provider",
+        lambda: "zzshare",
+    )
+    assert kline_api._minute_allowed(CapabilitySet()) is True
+
+
+def test_fetch_minute_single_routes_to_zzshare(monkeypatch):
+    """分时图补拉链路: 路由到 zzshare → _try_custom_minute 命中 registry 分支,
+    不再 fallback 到无权限的 TickFlow 而返回空 (source='none' 根因)。"""
+    from datetime import date, datetime
+
+    import polars as pl
+
+    fake_df = pl.DataFrame({
+        "symbol": ["600519.SH"],
+        "datetime": [datetime(2026, 9, 29, 9, 31)],
+        "open": [1500.0], "high": [1501.0], "low": [1499.0], "close": [1500.5],
+        "volume": [1200.0], "amount": [1.8e6],
+    })
+
+    monkeypatch.setattr(
+        kline_sync.preferences,
+        "get_minute_data_provider",
+        lambda: "zzshare",
+    )
+    monkeypatch.setattr(
+        "app.data_providers.zzshare_provider.ZzshareProvider.get_minute",
+        lambda self, symbols, start_time, end_time, asset_type="stock",
+        freq="1m", on_chunk_done=None: fake_df,
+    )
+
+    from app.tickflow.capabilities import CapabilitySet
+
+    df = kline_sync.fetch_minute_single(
+        "600519.SH", date(2026, 9, 29),
+        capset=CapabilitySet(),  # 无任何 TickFlow 能力
+    )
+    assert df.height == 1
+    assert df["symbol"][0] == "600519.SH"
+
+
 def test_minute_allowed_resolver_exception_returns_false(monkeypatch):
     """权限入口复用安全 resolver, 插件注册异常不再穿透为 500。"""
     from app.api import kline as kline_api

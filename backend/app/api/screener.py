@@ -853,6 +853,9 @@ def limit_ladder(
 
     # 双方向 sealed 修正: 减去各自的假涨停(假涨停已归炸板, 不计入涨停数)
     depth_svc_global = getattr(request.app.state, "depth_service", None)
+    # 五档盘口是连板封单的可选旁路; 服务未初始化时仍应返回基础梯队。
+    up_map: dict = {}
+    down_map: dict = {}
     fake_up = 0
     fake_down = 0
     sealed_up_ready = False
